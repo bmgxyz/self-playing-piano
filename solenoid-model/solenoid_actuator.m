@@ -5,17 +5,17 @@ close all;
 
 ## Independent Variables ##
 
-CoilBlockProps.Turns = 280;
+CoilBlockProps.Turns = 260;
        coil.pack_eff = 0.65;
     coil.length_corr = 0.76;
-            coil.gap = 1.0e-3;
+            coil.gap = 1.35e-3;
          coil.height = 32e-3;
       coil.wire_diam = 0.644e-3;
         coil.voltage = 24;
 coil.wire_diam_w_ins = 0.660e-3;
 
-      plunger.radius = 4.75e-3;
-      plunger.height = 32.4e-3;
+      plunger.radius = 4.7625e-3;
+      plunger.height = 42e-3;
            plunger.y = -coil.height/2 - plunger.height/2;
 
      frame.thickness = 2e-3;
@@ -138,9 +138,5 @@ plunger
 PlungerBlockProps
 frame
 FrameBlockProps
-plunger_force
 cost
-##power_efficiency = plunger_force / (coil.voltage * coil.current)
-##force_diff = (plunger_force - current_plunger_force)/current_plunger_force*100
-##cost_diff = (cost.total - current_cost)/current_cost*100
-##current_diff = (coil.current - current_current)/current_current*100
+plunger_force
