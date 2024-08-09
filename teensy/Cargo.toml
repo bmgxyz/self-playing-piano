@@ -1,0 +1,19 @@
+[package]
+name = "controller"
+version = "0.1.0"
+authors = ["Bradley Gannon <bradley@bradleygannon.com>"]
+edition = "2021"
+
+[dependencies]
+cortex-m = "0.7"
+embedded-hal = "0.2"
+fugit = "0.3.7"
+log = "0.4"
+usbd-midi = { git = "https://github.com/bmgxyz/usbd-midi", branch = "downgrade-usb-device" }
+teensy4-bsp = { version = "0.5", features = ["rt"] }
+teensy4-panic = { version = "0.2", features = ["log"] }
+usb-device = "0.2.9"
+usbd-serial = "0.1.1"
+
+[profile.release.build-override]
+opt-level = 0
