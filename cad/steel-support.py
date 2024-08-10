@@ -1,86 +1,101 @@
 import cadquery as cq
-from cadquery import exporters
-import os
+from common import *
 
-solenoid_diam = 22
-solenoid_h = 32
-steel_t = 2
-steel_tol = 0.2
-screw_diam = 3
-screw_tol = 0.5
-plunger_diam = 9.525
-plunger_tol = 2
-wall_t = 1.2
-hole_sep = 42
-
-h = solenoid_h + wall_t * 2 + steel_t + steel_tol
-head_w = wall_t * 4 + (steel_t + steel_tol) * 2 + solenoid_diam
-foot_w = hole_sep - head_w
 steel_support = (
     cq.Workplane("XZ")
     # Back wall
-    .rect(head_w,h,centered=(True,False))
-    .moveTo(head_w/2,0)
-    .rect(foot_w,wall_t,centered=False)
-    .moveTo(-head_w/2,0)
-    .rect(-foot_w,wall_t,centered=False)
-    .extrude(wall_t)
+    .rect(
+        SolenoidSupport.outer_arch_width,
+        SolenoidSupport.height,
+        centered=(True,False)
+    )
+    .moveTo(SolenoidSupport.outer_arch_width / 2, 0)
+    .rect(
+        SolenoidSupport.foot_width,
+        SolenoidSupport.wall_thickness,
+        centered=False
+    )
+    .moveTo(-SolenoidSupport.outer_arch_width / 2, 0)
+    .rect(
+        -SolenoidSupport.foot_width,
+        SolenoidSupport.wall_thickness,
+        centered=False
+    )
+    .extrude(SolenoidSupport.wall_thickness)
     # Inner arch
     .faces("<Y")
     .workplane()
-    .move(-solenoid_diam/2,0)
-    .line(0,solenoid_h)
-    .line(solenoid_diam,0)
-    .line(0,-solenoid_h)
-    .line(wall_t,0)
-    .line(0,solenoid_h+wall_t)
-    .line(-wall_t-solenoid_diam-wall_t,0)
-    .line(0,-solenoid_h-wall_t)
+    .move(-Solenoid.outer_diameter / 2, 0)
+    .line(0, Solenoid.height)
+    .line(Solenoid.outer_diameter, 0)
+    .line(0, -Solenoid.height)
+    .line(SolenoidSupport.wall_thickness, 0)
+    .line(0, Solenoid.height + SolenoidSupport.wall_thickness)
+    .line(
+        -SolenoidSupport.wall_thickness
+        - Solenoid.outer_diameter
+        - SolenoidSupport.wall_thickness, 0
+    )
+    .line(0, -Solenoid.height - SolenoidSupport.wall_thickness)
     .close()
     # Outer arch and feet
     .workplane()
-    .move(-head_w/2+wall_t,0)
-    .line(0,h-wall_t)
-    .line(head_w-2*wall_t,0)
-    .line(0,-h+wall_t)
-    .line(wall_t+foot_w,0)
-    .line(0,wall_t)
-    .line(-foot_w,0)
-    .line(0,h-wall_t)
-    .line(-head_w,0)
-    .line(0,-h+wall_t)
-    .line(-foot_w,0)
-    .line(0,-wall_t)
+    .move(
+        -SolenoidSupport.outer_arch_width / 2
+        + SolenoidSupport.wall_thickness, 0
+    )
+    .line(0, SolenoidSupport.height - SolenoidSupport.wall_thickness)
+    .line(
+        SolenoidSupport.outer_arch_width
+        - 2 * SolenoidSupport.wall_thickness, 0
+    )
+    .line(0, -SolenoidSupport.height + SolenoidSupport.wall_thickness)
+    .line(SolenoidSupport.wall_thickness + SolenoidSupport.foot_width, 0)
+    .line(0, SolenoidSupport.wall_thickness)
+    .line(-SolenoidSupport.foot_width, 0)
+    .line(0, SolenoidSupport.height - SolenoidSupport.wall_thickness)
+    .line(-SolenoidSupport.outer_arch_width, 0)
+    .line(0, -SolenoidSupport.height + SolenoidSupport.wall_thickness)
+    .line(-SolenoidSupport.foot_width, 0)
+    .line(0, -SolenoidSupport.wall_thickness)
     .close()
-    .extrude(solenoid_diam)
+    .extrude(Solenoid.outer_diameter)
     # Plunger hole
     .faces(">Z")
     .workplane()
-    .moveTo(0,-(solenoid_diam/2+wall_t))
-    .circle((plunger_diam+plunger_tol)/2)
+    .moveTo(0, -(Solenoid.outer_diameter / 2 + SolenoidSupport.wall_thickness))
+    .circle(Plunger.hole_diameter / 2)
     .cutThruAll()
     # Screw holes
     .faces("<Z")
     .workplane()
     .pushPoints([
-        ((head_w+foot_w)/2,wall_t+solenoid_diam/2),
-        (-(head_w+foot_w)/2,wall_t+solenoid_diam/2)
+        (
+            (SolenoidSupport.outer_arch_width + SolenoidSupport.foot_width) / 2,
+             SolenoidSupport.wall_thickness + Solenoid.outer_diameter / 2
+        ),
+        (
+            -(SolenoidSupport.outer_arch_width + SolenoidSupport.foot_width) / 2,
+            SolenoidSupport.wall_thickness + Solenoid.outer_diameter / 2
+        )
     ])
-    .circle((screw_diam+screw_tol)/2)
+    .circle(M3Screw.hole_diameter / 2)
     .cutThruAll()
     # Wire hole
     .faces(">Y")
     .workplane(invert=True)
     .tag("back")
-    .moveTo(0,-wall_t*1.5)
-    .rect(head_w,wall_t)
-    .cutBlind(wall_t)
+    .moveTo(0, -SolenoidSupport.wall_thickness * 1.5)
+    .rect(SolenoidSupport.outer_arch_width, SolenoidSupport.wall_thickness)
+    .cutBlind(SolenoidSupport.wall_thickness)
     .workplaneFromTagged("back")
-    .moveTo(0,-wall_t*1.5)
-    .rect(solenoid_diam+wall_t*2,wall_t)
-    .cutBlind(wall_t*2)
+    .moveTo(0, -SolenoidSupport.wall_thickness * 1.5)
+    .rect(
+        Solenoid.outer_diameter
+        + SolenoidSupport.wall_thickness * 2,
+        SolenoidSupport.wall_thickness
+    )
+    .cutBlind(SolenoidSupport.wall_thickness * 2)
 )
 
-show_object(steel_support)
-cd = os.path.dirname(os.path.abspath(__file__))
-exporters.export(steel_support,f"{cd}/steel-support.stl")
+export_stl(steel_support, "steel-support")

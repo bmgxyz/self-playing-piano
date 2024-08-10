@@ -1,5 +1,5 @@
 import cadquery as cq
-import os
+from common import *
 
 hole_pos = 21
 hole_d = 3.1
@@ -37,12 +37,5 @@ support = (
     )
 )
 
-assembly = (
-    cq.Assembly()
-    .add(spindle,name="spindle")
-    .add(support,name="support")
-)
-
-show_object(assembly)
-cd = os.path.dirname(os.path.abspath(__file__))
-assembly.save(f"{cd}/solenoid-winder.stl")
+export_stl(spindle, "winding-spindle")
+export_stl(support, "winding-support")

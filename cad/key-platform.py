@@ -1,39 +1,65 @@
 import cadquery as cq
-from cadquery import exporters
-import os
+from common import *
 
-key_h = 18.08
-key_clearance = 5
-platform_t = 2
-hole_diam = 3.5
-hole_sep = 42
-plunger_hole_diam = 12
-chamfer = 3
-base_d = 24
-bolt_buf = 10
-plunger_hole_pos = base_d+chamfer+bolt_buf+hole_sep/2
+def plunger_to_screws(plunger_positions):
+    screw_positions = []
+    for p in plunger_positions:
+        screw_positions.append((p[0], p[1] + SolenoidSupport.screw_hole_separation / 2))
+        screw_positions.append((p[0], p[1] - SolenoidSupport.screw_hole_separation / 2))
+    return screw_positions
 
-key_platform = (
-    cq.Workplane("YZ")
-    .vLine(key_h+key_clearance+platform_t)
-    .hLine(base_d+chamfer+hole_sep+bolt_buf*2)
-    .vLine(-platform_t)
-    .hLine(-hole_sep-bolt_buf*2)
-    .line(-chamfer,-chamfer)
-    .vLine(-key_h-key_clearance+chamfer)
-    .close()
-    .extrude(22/2,both=True)
-    .faces(">Z")
-    .workplane()
-    .moveTo(0,plunger_hole_pos)
-    .circle(plunger_hole_diam/2)
-    .cutThruAll()
-    .center(0,plunger_hole_pos)
-    .pushPoints([(0,hole_sep/2),(0,-hole_sep/2)])
-    .circle(hole_diam/2)
-    .cutThruAll()
-)
+def key_platform(num_white_keys):
+    if num_white_keys == 1:
+        plunger_positions = [(WhiteKey.width / 2, WhiteKey.plunger_hole_offset)]
+    elif num_white_keys == 2:
+        plunger_positions = [
+            (WhiteKey.width * 1 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width        , BlackKey.plunger_hole_offset),
+            (WhiteKey.width * 3 / 2, WhiteKey.plunger_hole_offset),
+        ]
+    elif num_white_keys == 7:
+        plunger_positions = [
+            (WhiteKey.width *  1 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width         , BlackKey.plunger_hole_offset),
+            (WhiteKey.width *  3 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width *  2    , BlackKey.plunger_hole_offset),
+            (WhiteKey.width *  5 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width *  7 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width *  4    , BlackKey.plunger_hole_offset),
+            (WhiteKey.width *  9 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width *  5    , BlackKey.plunger_hole_offset),
+            (WhiteKey.width * 11 / 2, WhiteKey.plunger_hole_offset),
+            (WhiteKey.width *  6    , BlackKey.plunger_hole_offset),
+            (WhiteKey.width * 13 / 2, WhiteKey.plunger_hole_offset),
+        ]
+    else:
+        raise ValueError(f"Expected one of [1, 2, 7] for num_white_keys, got: {num_white_keys}")
+    return (
+        cq.Workplane("YZ")
+        .vLine(KeyPlatform.bed_to_top)
+        .hLine(KeyPlatform.length)
+        .vLine(-KeyPlatform.thickness)
+        .hLine(
+            -KeyPlatform.length
+            + KeyPlatform.chamfer
+            + KeyPlatform.base_depth
+        )
+        .line(-KeyPlatform.chamfer, -KeyPlatform.chamfer)
+        .vLine(
+            -KeyPlatform.bed_to_top
+            + KeyPlatform.thickness
+            + KeyPlatform.chamfer
+        )
+        .close()
+        .extrude(WhiteKey.width * num_white_keys)
+        .faces(">Z")
+        .workplane()
+        .pushPoints(plunger_positions)
+        .hole(Plunger.hole_diameter)
+        .pushPoints(plunger_to_screws(plunger_positions))
+        .hole(M3Screw.hole_diameter)
+    )
 
-show_object(key_platform)
-cd = os.path.dirname(os.path.abspath(__file__))
-exporters.export(key_platform,f"{cd}/key-platform.stl")
+export_stl(key_platform(1), "one-key-platform")
+export_stl(key_platform(2), "three-key-platform")
+export_stl(key_platform(7), "eleven-key-platform")
