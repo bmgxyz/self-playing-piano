@@ -22,7 +22,7 @@ use bsp::{
         },
     },
 };
-use core::hint::spin_loop;
+use core::{hint::spin_loop, ops::Index};
 use embedded_hal::digital::v2::OutputPin;
 use usb_device::{
     class_prelude::*,
@@ -36,19 +36,36 @@ use usbd_midi::{
     },
     midi_device::MidiClass,
 };
-use usbd_serial::SerialPort;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-struct KeyForce(u8);
+struct KeyPwm(u8);
 
-impl From<U7> for KeyForce {
+impl KeyPwm {
+    const MAX_PWM: u8 = 64;
+    const MIN_PWM: u8 = 16;
+}
+
+impl From<U7> for KeyPwm {
     fn from(value: U7) -> Self {
-        KeyForce(value.into())
+        let velocity: u8 = value.into();
+        if velocity == 0 {
+            return KeyPwm(0);
+        }
+        let u7_max: u8 = U7::MAX.into();
+        let pwm = ((velocity as u16) * ((Self::MAX_PWM - Self::MIN_PWM) as u16) / (u7_max as u16))
+            as u8
+            + Self::MIN_PWM;
+        return KeyPwm(pwm);
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct KeyIndex(u8);
+
+impl KeyIndex {
+    const MIN_KEY_INDEX: u8 = 21;
+    const MAX_KEY_INDEX: u8 = 108;
+}
 
 #[derive(Debug)]
 struct InvalidKeyIndex;
@@ -58,11 +75,7 @@ impl TryFrom<Note> for KeyIndex {
 
     fn try_from(value: Note) -> Result<Self, Self::Error> {
         let idx: u8 = value.into();
-        if 60 <= idx && idx < 72 {
-            Ok(KeyIndex(idx - 60))
-        } else {
-            Err(InvalidKeyIndex)
-        }
+        idx.try_into()
     }
 }
 
@@ -70,8 +83,8 @@ impl TryFrom<u8> for KeyIndex {
     type Error = InvalidKeyIndex;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if 60 <= value && value < 72 {
-            Ok(KeyIndex(value - 60))
+        if Self::MIN_KEY_INDEX <= value && value <= Self::MAX_KEY_INDEX {
+            Ok(KeyIndex(value))
         } else {
             Err(InvalidKeyIndex)
         }
@@ -81,29 +94,37 @@ impl TryFrom<u8> for KeyIndex {
 #[derive(Debug, Clone, Copy)]
 enum KeyState {
     Off,
-    Pressing { timeout: u32 },
+    Pressing { timeout: u32, pwm: KeyPwm },
     Holding { timeout: u32 },
+    Repeating { timeout: u32, pwm: KeyPwm },
+    Releasing { timeout: u32 },
 }
 
-struct Enforcer {
+struct PwmManager {
     clk: Output<GPIO_AD_B0_03>,
     data: Output<GPIO_AD_B0_02>,
     latch: Output<GPIO_EMC_04>,
     output_timer: Gpt<1>,
     tick_timer: Gpt<2>,
     last_tick: u32,
-    keys: [KeyState; 12],
+    keys: [KeyState; 88],
+    _pedal: KeyState,
 }
 
-impl Enforcer {
+impl PwmManager {
+    const PRESS_TIMEOUT_US: u32 = 100_000;
+    const HOLD_TIMEOUT_US: u32 = 30_000_000;
+    const RELEASE_TIMEOUT_US: u32 = 100_000;
+    const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
+
     fn delay(&self) {
         self.output_timer.clear_elapsed(OutputCompareRegister::OCR1);
         while !self.output_timer.is_elapsed(OutputCompareRegister::OCR1) {
             spin_loop();
         }
     }
-    fn set_key_force(&mut self, idx: KeyIndex, force: KeyForce) {
-        let tx = ((idx.0 as u16) << 7) + force.0 as u16;
+    fn set_key_pwm(&mut self, idx: KeyIndex, pwm: KeyPwm) {
+        let tx = ((idx.0 as u16) << 7) + pwm.0 as u16;
         for i in (0..14).rev() {
             let _ = self.data.set_state((tx & (1 << i) != 0).into());
             self.delay();
@@ -120,47 +141,73 @@ impl Enforcer {
         let _ = self.latch.set_low();
     }
     fn tick(&mut self) {
-        //let current = self.tick_timer.count();
-        //let elapsed = if self.tick_timer.is_rollover() {
-        //    self.tick_timer.clear_rollover();
-        //    (u32::MAX - self.last_tick) + current
-        //} else {
-        //    current - self.last_tick
-        //};
-        //self.last_tick = current;
+        let current = self.tick_timer.count();
+        self.tick_timer.reset();
+        let elapsed = if self.tick_timer.is_rollover() {
+            self.tick_timer.clear_rollover();
+            (u32::MAX - self.last_tick) + current
+        } else {
+            current - self.last_tick
+        };
+        self.last_tick = current;
         for idx in 0..self.keys.len() {
             match self.keys[idx] {
                 KeyState::Off => (),
-                KeyState::Holding { mut timeout } => {
-                    //timeout = timeout.saturating_sub(elapsed);
-                    //if timeout == 0 {
-                    self.off(KeyIndex(idx.try_into().unwrap()));
-                    //}
-                }
-                KeyState::Pressing { mut timeout } => {
-                    //timeout = timeout.saturating_sub(elapsed);
-                    timeout -= 1;
-                    self.press(KeyIndex(idx.try_into().unwrap()), KeyForce(timeout as u8));
-                    //if timeout == 2 {
-                    //self.hold(KeyIndex(idx.try_into().unwrap()));
-                    //}
-                }
+                KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
+                    0 => self.hold(KeyIndex(idx.try_into().unwrap())),
+                    t => self.keys[idx] = KeyState::Pressing { timeout: t, pwm },
+                },
+                KeyState::Holding { timeout } => match timeout.saturating_sub(elapsed) {
+                    0 => self.release(KeyIndex(idx.try_into().unwrap())),
+                    t => self.keys[idx] = KeyState::Holding { timeout: t },
+                },
+                KeyState::Releasing { timeout } => match timeout.saturating_sub(elapsed) {
+                    0 => self.off(KeyIndex(idx.try_into().unwrap())),
+                    t => self.keys[idx] = KeyState::Releasing { timeout: t },
+                },
+                KeyState::Repeating { timeout, pwm } => match timeout.saturating_sub(elapsed) {
+                    0 => self.press(KeyIndex(idx.try_into().unwrap()), pwm),
+                    t => self.keys[idx] = KeyState::Repeating { timeout: t, pwm },
+                },
             }
         }
     }
     fn off(&mut self, key: KeyIndex) {
         self.keys[key.0 as usize] = KeyState::Off;
-        self.set_key_force(key, KeyForce(0));
+        self.set_key_pwm(key, KeyPwm(0));
     }
-    fn press(&mut self, key: KeyIndex, velocity: KeyForce) {
-        self.keys[key.0 as usize] = KeyState::Pressing { timeout: 2 };
-        self.set_key_force(key, velocity);
+    fn press(&mut self, key: KeyIndex, pwm: KeyPwm) {
+        self.keys[key.0 as usize] = KeyState::Pressing {
+            timeout: Self::PRESS_TIMEOUT_US,
+            pwm,
+        };
+        self.set_key_pwm(key, pwm);
     }
     fn hold(&mut self, key: KeyIndex) {
         self.keys[key.0 as usize] = KeyState::Holding {
-            timeout: 30_000_000,
+            timeout: Self::HOLD_TIMEOUT_US,
         };
-        self.set_key_force(key, KeyForce(16));
+        self.set_key_pwm(key, KeyPwm(16));
+    }
+    fn release(&mut self, key: KeyIndex) {
+        self.keys[key.0 as usize] = KeyState::Releasing {
+            timeout: Self::RELEASE_TIMEOUT_US,
+        };
+        self.set_key_pwm(key, KeyPwm(0));
+    }
+    fn repeat(&mut self, key: KeyIndex, pwm: KeyPwm) {
+        self.keys[key.0 as usize] = KeyState::Repeating {
+            timeout: Self::REPEAT_TIMEOUT_US,
+            pwm,
+        };
+        self.set_key_pwm(key, KeyPwm(0));
+    }
+}
+
+impl Index<KeyIndex> for PwmManager {
+    type Output = KeyState;
+    fn index(&self, index: KeyIndex) -> &Self::Output {
+        &self.keys[index.0 as usize]
     }
 }
 
@@ -207,33 +254,33 @@ fn main() -> ! {
     gpt1.set_divider(1);
     gpt1.enable();
 
-    gpt2.set_clock_source(ClockSource::CrystalOscillator);
+    gpt2.set_clock_source(ClockSource::PeripheralClock);
     gpt2.set_mode(Mode::FreeRunning);
-    gpt2.set_divider(24);
+    gpt2.set_divider(1);
     gpt2.enable();
 
-    let mut enforcer = Enforcer {
+    let mut pwm_manager = PwmManager {
         clk: gpio1.output(pins.p0),
         data: gpio1.output(pins.p1),
         latch: gpio4.output(pins.p2),
         output_timer: gpt1,
         tick_timer: gpt2,
         last_tick: 0,
-        keys: [KeyState::Off; 12],
+        keys: [KeyState::Off; 88],
+        _pedal: KeyState::Off,
     };
 
     clock_gate::usb().set(&mut ccm, clock_gate::Setting::On);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
     let bus_allocator = UsbBusAllocator::new(bus_adapter);
     let mut midi = MidiClass::new(&bus_allocator, 1, 1).unwrap();
-    let mut serial = SerialPort::new(&bus_allocator);
     let mut device = UsbDeviceBuilder::new(&bus_allocator, UsbVidPid(0x1234, 0x5678))
         .product("Bothoven")
         .device_class(0x00)
         .device_sub_class(0x00)
         .build();
     loop {
-        if device.poll(&mut [&mut midi, &mut serial]) {
+        if device.poll(&mut [&mut midi]) {
             let state = device.state();
             if state == usb_device::device::UsbDeviceState::Configured {
                 break;
@@ -243,18 +290,11 @@ fn main() -> ! {
     device.bus().configure();
 
     loop {
-        enforcer.tick();
+        pwm_manager.tick();
 
-        if !device.poll(&mut [&mut midi, &mut serial]) {
+        if !device.poll(&mut [&mut midi]) {
             continue;
         }
-
-        match enforcer.keys[0] {
-            KeyState::Pressing { timeout } => {
-                let _ = serial.write(&[((timeout % 10) as u8) + 0x30, 0x0a]);
-            }
-            _ => (),
-        };
 
         let mut buffer = [0; 64];
 
@@ -265,12 +305,23 @@ fn main() -> ! {
                     match packet.message {
                         Message::NoteOn(CHANNEL, note, velocity) => {
                             if let Ok(key) = note.try_into() {
-                                enforcer.press(key, velocity.into())
+                                match pwm_manager[key] {
+                                    KeyState::Off => pwm_manager.press(key, velocity.into()),
+                                    KeyState::Holding { .. } | KeyState::Releasing { .. } => {
+                                        pwm_manager.repeat(key, velocity.into())
+                                    }
+                                    KeyState::Pressing { .. } | KeyState::Repeating { .. } => (),
+                                }
                             }
                         }
                         Message::NoteOff(CHANNEL, note, _) => {
                             if let Ok(key) = note.try_into() {
-                                enforcer.off(key)
+                                match pwm_manager[key] {
+                                    KeyState::Pressing { .. }
+                                    | KeyState::Holding { .. }
+                                    | KeyState::Repeating { .. } => pwm_manager.release(key),
+                                    KeyState::Off | KeyState::Releasing { .. } => (),
+                                }
                             }
                         }
                         _ => (),

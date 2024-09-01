@@ -1,0 +1,20 @@
+digraph {
+  OFF -> PRESSING ["label" = "note on"]
+  OFF -> OFF ["label" = "note off"]
+
+  PRESSING -> PRESSING ["label" = "note on"]
+  PRESSING -> RELEASING ["label" = "note off"]
+  PRESSING -> HOLDING ["label" = "timeout"]
+
+  HOLDING -> REPEATING ["label" = "note on"]
+  HOLDING -> RELEASING ["label" = "note off"]
+  HOLDING -> RELEASING ["label" = "timeout"]
+
+  RELEASING -> REPEATING ["label" = "note on"]
+  RELEASING -> RELEASING ["label" = "note off"]
+  RELEASING -> OFF ["label" = "timeout"]
+
+  REPEATING -> REPEATING ["label" = "note on"]
+  REPEATING -> RELEASING ["label" = "note off"]
+  REPEATING -> PRESSING ["label" = "timeout"]
+}
