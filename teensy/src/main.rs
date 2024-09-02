@@ -43,19 +43,42 @@ struct KeyPwm(u8);
 impl KeyPwm {
     const MAX_PWM: u8 = 64;
     const MIN_PWM: u8 = 16;
+    const OFF: KeyPwm = KeyPwm(0);
+    const HOLDING: KeyPwm = KeyPwm(16);
+
+    fn map_velocity_to_pwm(velocity: u8) -> u8 {
+        ((velocity as u16) * ((Self::MAX_PWM - Self::MIN_PWM) as u16) / (127u16)) as u8
+            + Self::MIN_PWM
+    }
+}
+
+struct InvalidKeyPwm;
+
+impl TryFrom<u8> for KeyPwm {
+    type Error = InvalidKeyPwm;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(KeyPwm::OFF),
+            v if v > 127 => Err(InvalidKeyPwm),
+            v => {
+                let pwm = KeyPwm::map_velocity_to_pwm(v);
+                Ok(KeyPwm(pwm))
+            }
+        }
+    }
 }
 
 impl From<U7> for KeyPwm {
     fn from(value: U7) -> Self {
         let velocity: u8 = value.into();
-        if velocity == 0 {
-            return KeyPwm(0);
+        match velocity {
+            0 => KeyPwm::OFF,
+            v => {
+                let pwm = KeyPwm::map_velocity_to_pwm(v);
+                KeyPwm(pwm)
+            }
         }
-        let u7_max: u8 = U7::MAX.into();
-        let pwm = ((velocity as u16) * ((Self::MAX_PWM - Self::MIN_PWM) as u16) / (u7_max as u16))
-            as u8
-            + Self::MIN_PWM;
-        return KeyPwm(pwm);
     }
 }
 
@@ -63,8 +86,8 @@ impl From<U7> for KeyPwm {
 struct KeyIndex(u8);
 
 impl KeyIndex {
-    const MIN_KEY_INDEX: u8 = 21;
-    const MAX_KEY_INDEX: u8 = 108;
+    const MIN_MIDI_PITCH: u8 = 21;
+    const NUM_KEYS: u8 = 88;
 }
 
 #[derive(Debug)]
@@ -75,6 +98,21 @@ impl TryFrom<Note> for KeyIndex {
 
     fn try_from(value: Note) -> Result<Self, Self::Error> {
         let idx: u8 = value.into();
+        if idx < Self::MIN_MIDI_PITCH {
+            return Err(InvalidKeyIndex);
+        }
+        (idx - Self::MIN_MIDI_PITCH).try_into()
+    }
+}
+
+impl TryFrom<usize> for KeyIndex {
+    type Error = InvalidKeyIndex;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        let idx: u8 = match value.try_into() {
+            Ok(i) => i,
+            Err(_) => return Err(InvalidKeyIndex),
+        };
         idx.try_into()
     }
 }
@@ -83,7 +121,7 @@ impl TryFrom<u8> for KeyIndex {
     type Error = InvalidKeyIndex;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if Self::MIN_KEY_INDEX <= value && value <= Self::MAX_KEY_INDEX {
+        if value < Self::NUM_KEYS {
             Ok(KeyIndex(value))
         } else {
             Err(InvalidKeyIndex)
@@ -142,39 +180,43 @@ impl PwmManager {
     }
     fn tick(&mut self) {
         let current = self.tick_timer.count();
-        self.tick_timer.reset();
         let elapsed = if self.tick_timer.is_rollover() {
             self.tick_timer.clear_rollover();
-            (u32::MAX - self.last_tick) + current
+            self.tick_timer.reset();
+            u32::MAX
+                .saturating_sub(self.last_tick)
+                .saturating_add(current)
         } else {
-            current - self.last_tick
+            current.saturating_sub(self.last_tick)
         };
         self.last_tick = current;
         for idx in 0..self.keys.len() {
-            match self.keys[idx] {
-                KeyState::Off => (),
-                KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                    0 => self.hold(KeyIndex(idx.try_into().unwrap())),
-                    t => self.keys[idx] = KeyState::Pressing { timeout: t, pwm },
-                },
-                KeyState::Holding { timeout } => match timeout.saturating_sub(elapsed) {
-                    0 => self.release(KeyIndex(idx.try_into().unwrap())),
-                    t => self.keys[idx] = KeyState::Holding { timeout: t },
-                },
-                KeyState::Releasing { timeout } => match timeout.saturating_sub(elapsed) {
-                    0 => self.off(KeyIndex(idx.try_into().unwrap())),
-                    t => self.keys[idx] = KeyState::Releasing { timeout: t },
-                },
-                KeyState::Repeating { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                    0 => self.press(KeyIndex(idx.try_into().unwrap()), pwm),
-                    t => self.keys[idx] = KeyState::Repeating { timeout: t, pwm },
-                },
+            if let Ok(key_idx) = idx.try_into() {
+                match self[key_idx] {
+                    KeyState::Off => (),
+                    KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
+                        0 => self.hold(key_idx),
+                        timeout => self.keys[idx] = KeyState::Pressing { timeout, pwm },
+                    },
+                    KeyState::Holding { timeout } => match timeout.saturating_sub(elapsed) {
+                        0 => self.release(key_idx),
+                        timeout => self.keys[idx] = KeyState::Holding { timeout },
+                    },
+                    KeyState::Releasing { timeout } => match timeout.saturating_sub(elapsed) {
+                        0 => self.off(key_idx),
+                        timeout => self.keys[idx] = KeyState::Releasing { timeout },
+                    },
+                    KeyState::Repeating { timeout, pwm } => match timeout.saturating_sub(elapsed) {
+                        0 => self.press(key_idx, pwm),
+                        timeout => self.keys[idx] = KeyState::Repeating { timeout, pwm },
+                    },
+                }
             }
         }
     }
     fn off(&mut self, key: KeyIndex) {
         self.keys[key.0 as usize] = KeyState::Off;
-        self.set_key_pwm(key, KeyPwm(0));
+        self.set_key_pwm(key, KeyPwm::OFF);
     }
     fn press(&mut self, key: KeyIndex, pwm: KeyPwm) {
         self.keys[key.0 as usize] = KeyState::Pressing {
@@ -187,20 +229,20 @@ impl PwmManager {
         self.keys[key.0 as usize] = KeyState::Holding {
             timeout: Self::HOLD_TIMEOUT_US,
         };
-        self.set_key_pwm(key, KeyPwm(16));
+        self.set_key_pwm(key, KeyPwm::HOLDING);
     }
     fn release(&mut self, key: KeyIndex) {
         self.keys[key.0 as usize] = KeyState::Releasing {
             timeout: Self::RELEASE_TIMEOUT_US,
         };
-        self.set_key_pwm(key, KeyPwm(0));
+        self.set_key_pwm(key, KeyPwm::OFF);
     }
     fn repeat(&mut self, key: KeyIndex, pwm: KeyPwm) {
         self.keys[key.0 as usize] = KeyState::Repeating {
             timeout: Self::REPEAT_TIMEOUT_US,
             pwm,
         };
-        self.set_key_pwm(key, KeyPwm(0));
+        self.set_key_pwm(key, KeyPwm::OFF);
     }
 }
 

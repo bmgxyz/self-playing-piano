@@ -8,8 +8,8 @@ controller.hex: Cargo.lock Cargo.toml src/*
 transition-diagram.svg: transition-diagram.gv
 	dot transition-diagram.gv -Tsvg > transition-diagram.svg
 
-flash:
-	sudo $(which teensy_loader_cli) --mcu=TEENSY41 -s -w controller.hex
+flash: controller.hex
+	sudo $(shell command -v teensy_loader_cli) --mcu=TEENSY41 -s -w controller.hex
 
 clean:
 	cargo clean
