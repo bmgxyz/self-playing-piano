@@ -282,10 +282,10 @@ fn main() -> ! {
     sm.set_load_mode(flexpwm::LoadMode::reload_full());
     sm.set_load_frequency(1);
     sm.set_initial_count(&pwm, 0);
-    sm.set_value(flexpwm::FULL_RELOAD_VALUE_REGISTER, 32);
+    sm.set_value(flexpwm::FULL_RELOAD_VALUE_REGISTER, 48);
     let clk_cnt = flexpwm::Output::new_b(pins.p3);
     clk_cnt.set_turn_off(&sm, 0);
-    clk_cnt.set_turn_on(&sm, 16);
+    clk_cnt.set_turn_on(&sm, 24);
     clk_cnt.set_output_enable(&mut pwm, true);
     sm.set_load_ok(&mut pwm);
     sm.set_running(&mut pwm, true);
