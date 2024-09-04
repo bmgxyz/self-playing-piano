@@ -13,7 +13,7 @@ module vel_ram (
     initial begin
         r_data = 0;
         for (idx = 0; idx < 128; idx = idx + 1) begin
-            mem[idx] = 0;
+            mem[idx] = !0;
         end
     end
 
@@ -62,11 +62,11 @@ module piano(
 
     initial begin
         cnt = 0;
-	    sr = 0;
+        sr = 0;
         r_en = 1;
         w_en = 0;
         w_data = 0;
-        out = 0;
+        out = !0;
         vel = 0;
         start_cnt = 0;
         key_oh = 0;
