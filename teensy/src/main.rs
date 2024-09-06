@@ -1,10 +1,14 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::prelude::_embedded_hal_blocking_spi_Transfer;
 use teensy4_bsp::{
     self as bsp,
+    board::LpspiPins,
     hal::{
-        ccm::clock_gate,
+        ccm::{analog::pll2, clock_gate, lpspi_clk},
+        iomuxc::pads::gpio_b0::{GPIO_B0_00, GPIO_B0_01, GPIO_B0_02, GPIO_B0_03},
+        lpspi::{BitOrder, Lpspi, SamplePoint},
         usbd::{BusAdapter, EndpointMemory, EndpointState, Speed},
     },
 };
@@ -12,18 +16,9 @@ use teensy4_panic as _;
 
 use bsp::{
     board,
-    hal::{
-        flexpwm,
-        gpio::Output,
-        gpt::{ClockSource, Gpt, Mode, OutputCompareRegister},
-        iomuxc::pads::{
-            gpio_ad_b0::{GPIO_AD_B0_02, GPIO_AD_B0_03},
-            gpio_emc::GPIO_EMC_04,
-        },
-    },
+    hal::gpt::{ClockSource, Gpt, Mode},
 };
-use core::{hint::spin_loop, ops::Index};
-use embedded_hal::digital::v2::OutputPin;
+use core::ops::Index;
 use usb_device::{
     class_prelude::*,
     device::{UsbDeviceBuilder, UsbVidPid},
@@ -82,12 +77,18 @@ impl From<U7> for KeyPwm {
     }
 }
 
+struct Subcontroller(u8);
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct KeyIndex(u8);
 
 impl KeyIndex {
     const MIN_MIDI_PITCH: u8 = 21;
     const NUM_KEYS: u8 = 88;
+
+    fn subcontroller(&self) -> Subcontroller {
+        Subcontroller(self.0 / 11)
+    }
 }
 
 #[derive(Debug)]
@@ -138,12 +139,11 @@ enum KeyState {
     Releasing { timeout: u32 },
 }
 
+type Spi = Lpspi<LpspiPins<GPIO_B0_02, GPIO_B0_01, GPIO_B0_03, GPIO_B0_00>, 4>;
+
 struct PwmManager {
-    clk: Output<GPIO_AD_B0_03>,
-    data: Output<GPIO_AD_B0_02>,
-    latch: Output<GPIO_EMC_04>,
-    output_timer: Gpt<1>,
-    tick_timer: Gpt<2>,
+    spi: Spi,
+    tick_timer: Gpt<1>,
     last_tick: u32,
     keys: [KeyState; 88],
     _pedal: KeyState,
@@ -155,28 +155,17 @@ impl PwmManager {
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
 
-    fn delay(&self) {
-        self.output_timer.clear_elapsed(OutputCompareRegister::OCR1);
-        while !self.output_timer.is_elapsed(OutputCompareRegister::OCR1) {
-            spin_loop();
-        }
-    }
     fn set_key_pwm(&mut self, idx: KeyIndex, pwm: KeyPwm) {
-        let tx = ((idx.0 as u16) << 7) + pwm.0 as u16;
-        for i in (0..14).rev() {
-            let _ = self.data.set_state((tx & (1 << i) != 0).into());
-            self.delay();
-            let _ = self.clk.set_high();
-            self.delay();
-            let _ = self.clk.set_low();
+        let mut buf = [0u8; 256];
+        for (idx, byte) in buf.iter_mut().enumerate() {
+            if idx < pwm.0 as usize && idx < 128 {
+                *byte = 0xff;
+            }
         }
-        let _ = self.data.set_low();
-        let _ = self.latch.set_high();
-        self.delay();
-        let _ = self.clk.set_high();
-        self.delay();
-        let _ = self.clk.set_low();
-        let _ = self.latch.set_low();
+        let _ = match idx.subcontroller() {
+            Subcontroller(0) => self.spi.transfer(&mut buf),
+            _ => todo!(),
+        };
     }
     fn tick(&mut self) {
         let current = self.tick_timer.count();
@@ -258,59 +247,46 @@ static EP_STATE: EndpointState = EndpointState::max_endpoints();
 
 const CHANNEL: Channel = Channel::Channel1;
 
+const LPSPI_CLK_DIVIDER: u32 = 4;
+const LPSPI_CLK_HZ: u32 = pll2::FREQUENCY / LPSPI_CLK_DIVIDER;
+const SCK_HZ: u32 = 512_000;
+
 #[bsp::rt::entry]
 fn main() -> ! {
     let instances = board::instances();
     let board::Resources {
-        mut gpio1,
-        mut gpio4,
-        mut gpt1,
-        mut gpt2,
-        pins,
-        flexpwm4,
-        usb,
         mut ccm,
+        mut gpt1,
+        lpspi4,
+        pins,
+        usb,
         ..
     } = board::t41(instances);
 
-    let (mut pwm, (_, _, mut sm, _)) = flexpwm4;
-    sm.set_debug_enable(true);
-    sm.set_wait_enable(true);
-    sm.set_clock_select(flexpwm::ClockSelect::Ipg);
-    sm.set_prescaler(flexpwm::Prescaler::Prescaler1);
-    sm.set_pair_operation(flexpwm::PairOperation::Independent);
-    sm.set_load_mode(flexpwm::LoadMode::reload_full());
-    sm.set_load_frequency(1);
-    sm.set_initial_count(&pwm, 0);
-    sm.set_value(flexpwm::FULL_RELOAD_VALUE_REGISTER, 48);
-    let clk_cnt = flexpwm::Output::new_b(pins.p3);
-    clk_cnt.set_turn_off(&sm, 0);
-    clk_cnt.set_turn_on(&sm, 24);
-    clk_cnt.set_output_enable(&mut pwm, true);
-    sm.set_load_ok(&mut pwm);
-    sm.set_running(&mut pwm, true);
+    clock_gate::lpspi::<2>().set(&mut ccm, clock_gate::OFF);
+    lpspi_clk::set_selection(&mut ccm, lpspi_clk::Selection::Pll2);
+    lpspi_clk::set_divider(&mut ccm, LPSPI_CLK_DIVIDER);
+    clock_gate::lpspi::<2>().set(&mut ccm, clock_gate::ON);
+    let mut spi = board::lpspi(
+        lpspi4,
+        board::LpspiPins {
+            sdo: pins.p11,
+            sdi: pins.p12,
+            sck: pins.p13,
+            pcs0: pins.p10,
+        },
+        SCK_HZ,
+    );
+    spi.set_bit_order(BitOrder::Msb);
+    spi.disabled(|spi| {
+        spi.set_clock_hz(LPSPI_CLK_HZ, SCK_HZ);
+        spi.set_sample_point(SamplePoint::Edge);
+    });
 
-    gpt1.set_output_compare_count(OutputCompareRegister::OCR1, 10);
     gpt1.set_clock_source(ClockSource::PeripheralClock);
-    gpt1.set_mode(Mode::Restart);
+    gpt1.set_mode(Mode::FreeRunning);
     gpt1.set_divider(1);
     gpt1.enable();
-
-    gpt2.set_clock_source(ClockSource::PeripheralClock);
-    gpt2.set_mode(Mode::FreeRunning);
-    gpt2.set_divider(1);
-    gpt2.enable();
-
-    let mut pwm_manager = PwmManager {
-        clk: gpio1.output(pins.p0),
-        data: gpio1.output(pins.p1),
-        latch: gpio4.output(pins.p2),
-        output_timer: gpt1,
-        tick_timer: gpt2,
-        last_tick: 0,
-        keys: [KeyState::Off; 88],
-        _pedal: KeyState::Off,
-    };
 
     clock_gate::usb().set(&mut ccm, clock_gate::Setting::On);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
@@ -330,6 +306,14 @@ fn main() -> ! {
         }
     }
     device.bus().configure();
+
+    let mut pwm_manager = PwmManager {
+        spi,
+        tick_timer: gpt1,
+        last_tick: 0,
+        keys: [KeyState::Off; 88],
+        _pedal: KeyState::Off,
+    };
 
     loop {
         pwm_manager.tick();
