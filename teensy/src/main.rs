@@ -2,12 +2,19 @@
 #![no_main]
 
 use cortex_m::prelude::_embedded_hal_blocking_spi_Transfer;
+use embedded_hal::digital::v2::{OutputPin, PinState};
 use teensy4_bsp::{
     self as bsp,
     board::LpspiPins,
     hal::{
         ccm::{analog::pll2, clock_gate, lpspi_clk},
-        iomuxc::pads::gpio_b0::{GPIO_B0_00, GPIO_B0_01, GPIO_B0_02, GPIO_B0_03},
+        gpio::Output,
+        iomuxc::pads::{
+            gpio_ad_b0::{GPIO_AD_B0_02, GPIO_AD_B0_03},
+            gpio_b0::{GPIO_B0_00, GPIO_B0_01, GPIO_B0_02, GPIO_B0_03, GPIO_B0_10},
+            gpio_b1::GPIO_B1_01,
+            gpio_emc::{GPIO_EMC_04, GPIO_EMC_05, GPIO_EMC_06, GPIO_EMC_08},
+        },
         lpspi::{BitOrder, Lpspi, SamplePoint},
         usbd::{BusAdapter, EndpointMemory, EndpointState, Speed},
     },
@@ -77,7 +84,20 @@ impl From<U7> for KeyPwm {
     }
 }
 
-struct Subcontroller(u8);
+#[derive(Debug, Clone, Copy)]
+struct Subcontroller {
+    needs_update: bool,
+    keys: [KeyState; 11],
+}
+
+impl Default for Subcontroller {
+    fn default() -> Self {
+        Subcontroller {
+            needs_update: false,
+            keys: [KeyState::default(); 11],
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 struct KeyIndex(u8);
@@ -86,8 +106,15 @@ impl KeyIndex {
     const MIN_MIDI_PITCH: u8 = 21;
     const NUM_KEYS: u8 = 88;
 
-    fn subcontroller(&self) -> Subcontroller {
-        Subcontroller(self.0 / 11)
+    fn get_subcontroller_idxs(&self) -> (usize, usize) {
+        (self.0 as usize / 11, self.0 as usize % 11)
+    }
+}
+
+impl Index<KeyIndex> for Subcontroller {
+    type Output = KeyState;
+    fn index(&self, index: KeyIndex) -> &Self::Output {
+        &self.keys[index.0 as usize]
     }
 }
 
@@ -139,13 +166,40 @@ enum KeyState {
     Releasing { timeout: u32 },
 }
 
+impl KeyState {
+    fn same_state(&self, other: &KeyState) -> bool {
+        match (self, other) {
+            (KeyState::Off, KeyState::Off)
+            | (KeyState::Pressing { .. }, KeyState::Pressing { .. })
+            | (KeyState::Holding { .. }, KeyState::Holding { .. })
+            | (KeyState::Repeating { .. }, KeyState::Repeating { .. })
+            | (KeyState::Releasing { .. }, KeyState::Releasing { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Default for KeyState {
+    fn default() -> Self {
+        KeyState::Off
+    }
+}
+
 type Spi = Lpspi<LpspiPins<GPIO_B0_02, GPIO_B0_01, GPIO_B0_03, GPIO_B0_00>, 4>;
 
 struct PwmManager {
     spi: Spi,
+    cs0: Output<GPIO_AD_B0_03>,
+    cs1: Output<GPIO_AD_B0_02>,
+    cs2: Output<GPIO_EMC_04>,
+    cs3: Output<GPIO_EMC_05>,
+    cs4: Output<GPIO_EMC_06>,
+    cs5: Output<GPIO_EMC_08>,
+    cs6: Output<GPIO_B0_10>,
+    cs7: Output<GPIO_B1_01>,
     tick_timer: Gpt<1>,
     last_tick: u32,
-    keys: [KeyState; 88],
+    subcontrollers: [Subcontroller; 8],
     _pedal: KeyState,
 }
 
@@ -155,17 +209,75 @@ impl PwmManager {
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
 
-    fn set_key_pwm(&mut self, idx: KeyIndex, pwm: KeyPwm) {
-        let mut buf = [0u8; 256];
-        for (idx, byte) in buf.iter_mut().enumerate() {
-            if idx < pwm.0 as usize && idx < 128 {
-                *byte = 0xff;
+    fn reset(&mut self) {
+        for idx in 0..self.subcontrollers.len() {
+            self.set_cs_state(idx, PinState::High);
+        }
+    }
+    fn set_cs_state(&mut self, idx: usize, state: PinState) {
+        let _ = match idx {
+            0 => self.cs0.set_state(state),
+            1 => self.cs1.set_state(state),
+            2 => self.cs2.set_state(state),
+            3 => self.cs3.set_state(state),
+            4 => self.cs4.set_state(state),
+            5 => self.cs5.set_state(state),
+            6 => self.cs6.set_state(state),
+            7 => self.cs7.set_state(state),
+            _ => Ok(()),
+        };
+    }
+    fn update_subcontroller(&mut self, idx: usize) {
+        self.set_cs_state(idx, PinState::Low);
+        let mut new_pwm_bytes = [0u8; 256];
+        for pwm_idx in 0..128 {
+            for key_idx in 0..6 {
+                match self.get_key_state(KeyIndex(key_idx)) {
+                    KeyState::Pressing { pwm, .. } => {
+                        if pwm.0 > pwm_idx {
+                            new_pwm_bytes[pwm_idx as usize] |= 1 << key_idx
+                        }
+                    }
+                    KeyState::Holding { .. } => {
+                        if KeyPwm::HOLDING.0 > pwm_idx {
+                            new_pwm_bytes[pwm_idx as usize] |= 1 << key_idx
+                        }
+                    }
+                    KeyState::Off | KeyState::Releasing { .. } | KeyState::Repeating { .. } => (),
+                }
+            }
+            for key_idx in 6..11 {
+                match self.get_key_state(KeyIndex(key_idx)) {
+                    KeyState::Pressing { pwm, .. } => {
+                        if pwm.0 > pwm_idx {
+                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << key_idx
+                        }
+                    }
+                    KeyState::Holding { .. } => {
+                        if KeyPwm::HOLDING.0 > pwm_idx {
+                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << key_idx
+                        }
+                    }
+                    KeyState::Off | KeyState::Releasing { .. } | KeyState::Repeating { .. } => (),
+                }
             }
         }
-        let _ = match idx.subcontroller() {
-            Subcontroller(0) => self.spi.transfer(&mut buf),
-            _ => todo!(),
-        };
+        let _ = self.spi.transfer(&mut new_pwm_bytes);
+        self.set_cs_state(idx, PinState::High);
+        self.subcontrollers[idx].needs_update = false;
+    }
+    fn set_key_state(&mut self, idx: KeyIndex, state: KeyState) {
+        let (subcontroller_idx, key_idx) = idx.get_subcontroller_idxs();
+        let subcontroller = &mut self.subcontrollers[subcontroller_idx];
+        let current_state = &mut subcontroller.keys[key_idx];
+        if !current_state.same_state(&state) {
+            subcontroller.needs_update = true;
+        }
+        *current_state = state;
+    }
+    fn get_key_state(&self, idx: KeyIndex) -> KeyState {
+        let (subcontroller_idx, key_idx) = idx.get_subcontroller_idxs();
+        self.subcontrollers[subcontroller_idx].keys[key_idx]
     }
     fn tick(&mut self) {
         let current = self.tick_timer.count();
@@ -179,66 +291,52 @@ impl PwmManager {
             current.saturating_sub(self.last_tick)
         };
         self.last_tick = current;
-        for idx in 0..self.keys.len() {
+        for idx in 0u8..=88 {
             if let Ok(key_idx) = idx.try_into() {
-                match self[key_idx] {
+                match self.get_key_state(key_idx) {
                     KeyState::Off => (),
                     KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                        0 => self.hold(key_idx),
-                        timeout => self.keys[idx] = KeyState::Pressing { timeout, pwm },
+                        0 => self.set_key_state(
+                            key_idx,
+                            KeyState::Holding {
+                                timeout: Self::HOLD_TIMEOUT_US,
+                            },
+                        ),
+                        timeout => self.set_key_state(key_idx, KeyState::Pressing { timeout, pwm }),
                     },
                     KeyState::Holding { timeout } => match timeout.saturating_sub(elapsed) {
-                        0 => self.release(key_idx),
-                        timeout => self.keys[idx] = KeyState::Holding { timeout },
+                        0 => self.set_key_state(
+                            key_idx,
+                            KeyState::Releasing {
+                                timeout: Self::RELEASE_TIMEOUT_US,
+                            },
+                        ),
+                        timeout => self.set_key_state(key_idx, KeyState::Holding { timeout }),
                     },
                     KeyState::Releasing { timeout } => match timeout.saturating_sub(elapsed) {
-                        0 => self.off(key_idx),
-                        timeout => self.keys[idx] = KeyState::Releasing { timeout },
+                        0 => self.set_key_state(key_idx, KeyState::Off),
+                        timeout => self.set_key_state(key_idx, KeyState::Releasing { timeout }),
                     },
                     KeyState::Repeating { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                        0 => self.press(key_idx, pwm),
-                        timeout => self.keys[idx] = KeyState::Repeating { timeout, pwm },
+                        0 => self.set_key_state(
+                            key_idx,
+                            KeyState::Pressing {
+                                timeout: Self::PRESS_TIMEOUT_US,
+                                pwm,
+                            },
+                        ),
+                        timeout => {
+                            self.set_key_state(key_idx, KeyState::Repeating { timeout, pwm })
+                        }
                     },
                 }
             }
         }
-    }
-    fn off(&mut self, key: KeyIndex) {
-        self.keys[key.0 as usize] = KeyState::Off;
-        self.set_key_pwm(key, KeyPwm::OFF);
-    }
-    fn press(&mut self, key: KeyIndex, pwm: KeyPwm) {
-        self.keys[key.0 as usize] = KeyState::Pressing {
-            timeout: Self::PRESS_TIMEOUT_US,
-            pwm,
-        };
-        self.set_key_pwm(key, pwm);
-    }
-    fn hold(&mut self, key: KeyIndex) {
-        self.keys[key.0 as usize] = KeyState::Holding {
-            timeout: Self::HOLD_TIMEOUT_US,
-        };
-        self.set_key_pwm(key, KeyPwm::HOLDING);
-    }
-    fn release(&mut self, key: KeyIndex) {
-        self.keys[key.0 as usize] = KeyState::Releasing {
-            timeout: Self::RELEASE_TIMEOUT_US,
-        };
-        self.set_key_pwm(key, KeyPwm::OFF);
-    }
-    fn repeat(&mut self, key: KeyIndex, pwm: KeyPwm) {
-        self.keys[key.0 as usize] = KeyState::Repeating {
-            timeout: Self::REPEAT_TIMEOUT_US,
-            pwm,
-        };
-        self.set_key_pwm(key, KeyPwm::OFF);
-    }
-}
-
-impl Index<KeyIndex> for PwmManager {
-    type Output = KeyState;
-    fn index(&self, index: KeyIndex) -> &Self::Output {
-        &self.keys[index.0 as usize]
+        for idx in 0..self.subcontrollers.len() {
+            if self.subcontrollers[idx].needs_update {
+                self.update_subcontroller(idx);
+            }
+        }
     }
 }
 
@@ -255,6 +353,9 @@ const SCK_HZ: u32 = 512_000;
 fn main() -> ! {
     let instances = board::instances();
     let board::Resources {
+        mut gpio1,
+        mut gpio2,
+        mut gpio4,
         mut ccm,
         mut gpt1,
         lpspi4,
@@ -307,13 +408,23 @@ fn main() -> ! {
     }
     device.bus().configure();
 
+    let subcontrollers = [Subcontroller::default(); 8];
     let mut pwm_manager = PwmManager {
         spi,
+        cs0: gpio1.output(pins.p0),
+        cs1: gpio1.output(pins.p1),
+        cs2: gpio4.output(pins.p2),
+        cs3: gpio4.output(pins.p3),
+        cs4: gpio4.output(pins.p4),
+        cs5: gpio4.output(pins.p5),
+        cs6: gpio2.output(pins.p6),
+        cs7: gpio2.output(pins.p7),
         tick_timer: gpt1,
         last_tick: 0,
-        keys: [KeyState::Off; 88],
-        _pedal: KeyState::Off,
+        subcontrollers,
+        _pedal: KeyState::default(),
     };
+    pwm_manager.reset();
 
     loop {
         pwm_manager.tick();
@@ -330,22 +441,39 @@ fn main() -> ! {
                 if let Ok(packet) = packet {
                     match packet.message {
                         Message::NoteOn(CHANNEL, note, velocity) => {
-                            if let Ok(key) = note.try_into() {
-                                match pwm_manager[key] {
-                                    KeyState::Off => pwm_manager.press(key, velocity.into()),
+                            if let Ok(key_idx) = note.try_into() {
+                                match pwm_manager.get_key_state(key_idx) {
+                                    KeyState::Off => pwm_manager.set_key_state(
+                                        key_idx,
+                                        KeyState::Pressing {
+                                            timeout: PwmManager::PRESS_TIMEOUT_US,
+                                            pwm: velocity.into(),
+                                        },
+                                    ),
                                     KeyState::Holding { .. } | KeyState::Releasing { .. } => {
-                                        pwm_manager.repeat(key, velocity.into())
+                                        pwm_manager.set_key_state(
+                                            key_idx,
+                                            KeyState::Repeating {
+                                                timeout: PwmManager::REPEAT_TIMEOUT_US,
+                                                pwm: velocity.into(),
+                                            },
+                                        )
                                     }
                                     KeyState::Pressing { .. } | KeyState::Repeating { .. } => (),
                                 }
                             }
                         }
                         Message::NoteOff(CHANNEL, note, _) => {
-                            if let Ok(key) = note.try_into() {
-                                match pwm_manager[key] {
+                            if let Ok(key_idx) = note.try_into() {
+                                match pwm_manager.get_key_state(key_idx) {
                                     KeyState::Pressing { .. }
                                     | KeyState::Holding { .. }
-                                    | KeyState::Repeating { .. } => pwm_manager.release(key),
+                                    | KeyState::Repeating { .. } => pwm_manager.set_key_state(
+                                        key_idx,
+                                        KeyState::Releasing {
+                                            timeout: PwmManager::RELEASE_TIMEOUT_US,
+                                        },
+                                    ),
                                     KeyState::Off | KeyState::Releasing { .. } => (),
                                 }
                             }
