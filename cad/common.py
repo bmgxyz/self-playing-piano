@@ -45,13 +45,13 @@ class SteelSupport:
     )
     screw_hole_separation = outer_arch_width + M3Screw.hole_buffer_diameter
     foot_width = screw_hole_separation - outer_arch_width
-    wire_hole_height = 2
 
 class KeyPlatform:
-    clearance = 5
+    clearance = 8.8
     thickness = 2
-    base_depth = 24
-    length = base_depth + 170
+    base_depth = 12
+    length = base_depth + 173
+    window_fraction = 0.65
 
 class PlatformRib:
     width = 2.4
@@ -67,6 +67,12 @@ class WhiteKey:
         + M3Screw.hole_buffer_diameter
         + SteelSupport.screw_hole_separation / 2
     )
+
+SteelSupport.depth_to_wall = (
+    WhiteKey.width
+    - SteelSupport.wall_thickness
+    - 1.5
+)
 
 class BlackKey:
     width = 10.2

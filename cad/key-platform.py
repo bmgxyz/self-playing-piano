@@ -44,7 +44,8 @@ def key_platform(num_white_keys):
         ]
     else:
         raise ValueError(f"Expected one of [1, 2, 7] for num_white_keys, got: {num_white_keys}")
-    return (
+    width = WhiteKey.width * num_white_keys
+    platform = (
         cq.Workplane("YZ")
         .vLine(KeyPlatform.bed_to_top)
         .hLine(KeyPlatform.length)
@@ -58,7 +59,7 @@ def key_platform(num_white_keys):
             + KeyPlatform.thickness
         )
         .close()
-        .extrude(WhiteKey.width * num_white_keys)
+        .extrude(width)
         .faces(">Z")
         .workplane()
         .pushPoints(plunger_positions)
@@ -71,6 +72,17 @@ def key_platform(num_white_keys):
         .rect(PlatformRib.width, PlatformRib.thickness, centered=False)
         .extrude(PlatformRib.length)
     )
+    if num_white_keys == 7:
+        platform = (
+            platform
+            .moveTo((1 - KeyPlatform.window_fraction) * width / 2, KeyPlatform.bed_to_top)
+            .hLine(width * KeyPlatform.window_fraction)
+            .vLine(-KeyPlatform.bed_to_top + PlatformRib.thickness)
+            .hLine(-width * KeyPlatform.window_fraction)
+            .close()
+            .cutThruAll()
+        )
+    return platform
 
 export_stl(key_platform(1), "one-key-platform")
 export_stl(key_platform(2), "three-key-platform")

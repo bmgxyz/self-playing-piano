@@ -59,11 +59,11 @@ steel_support = (
     .line(-SteelSupport.foot_width, 0)
     .line(0, -SteelSupport.wall_thickness)
     .close()
-    .extrude(Solenoid.outer_diameter)
+    .extrude(SteelSupport.depth_to_wall)
     # Plunger hole
     .faces(">Z")
     .workplane()
-    .moveTo(0, -(Solenoid.outer_diameter / 2 + SteelSupport.wall_thickness))
+    .moveTo(0, -(SteelSupport.depth_to_wall / 2))
     .circle(Plunger.hole_diameter / 2)
     .cutThruAll()
     # Screw holes
@@ -72,24 +72,15 @@ steel_support = (
     .pushPoints([
         (
             (SteelSupport.outer_arch_width + SteelSupport.foot_width) / 2,
-             SteelSupport.wall_thickness + Solenoid.outer_diameter / 2
+            SteelSupport.depth_to_wall / 2
         ),
         (
             -(SteelSupport.outer_arch_width + SteelSupport.foot_width) / 2,
-            SteelSupport.wall_thickness + Solenoid.outer_diameter / 2
+            SteelSupport.depth_to_wall / 2
         )
     ])
     .circle(M3Screw.hole_diameter / 2)
     .cutThruAll()
-    # Wire hole
-    .faces(">Y")
-    .workplane(invert=True)
-    .rect(
-        SteelSupport.outer_arch_width - 2 * SteelSupport.wall_thickness,
-        -(SteelSupport.wire_hole_height + SteelSupport.wall_thickness),
-        centered=(True,False)
-    )
-    .cutThruAll(SteelSupport.wall_thickness)
 )
 
 export_stl(steel_support, "steel-support")
