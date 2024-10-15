@@ -3,6 +3,7 @@
 
 use cortex_m::prelude::_embedded_hal_blocking_spi_Transfer;
 use embedded_hal::digital::v2::{OutputPin, PinState};
+use log::{debug, Log, Record};
 use teensy4_bsp::{
     self as bsp,
     board::LpspiPins,
@@ -25,10 +26,10 @@ use bsp::{
     board,
     hal::gpt::{ClockSource, Gpt, Mode},
 };
-use core::ops::Index;
+use core::{cell::OnceCell, ops::Index};
 use usb_device::{
     class_prelude::*,
-    device::{UsbDeviceBuilder, UsbVidPid},
+    device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
 };
 use usbd_midi::{
     data::{
@@ -38,15 +39,16 @@ use usbd_midi::{
     },
     midi_device::MidiClass,
 };
+use usbd_serial::{embedded_io::Write, SerialPort};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 struct KeyPwm(u8);
 
 impl KeyPwm {
-    const MAX_PWM: u8 = 64;
-    const MIN_PWM: u8 = 16;
+    const MAX_PWM: u8 = 72;
+    const MIN_PWM: u8 = 26;
     const OFF: KeyPwm = KeyPwm(0);
-    const HOLDING: KeyPwm = KeyPwm(16);
+    const HOLDING: KeyPwm = KeyPwm(18);
 
     fn map_velocity_to_pwm(velocity: u8) -> u8 {
         ((velocity as u16) * ((Self::MAX_PWM - Self::MIN_PWM) as u16) / (127u16)) as u8
@@ -106,6 +108,7 @@ impl KeyIndex {
     const MIN_MIDI_PITCH: u8 = 21;
     const NUM_KEYS: u8 = 88;
 
+    // TODO: this should be encoded as a new type
     fn get_subcontroller_idxs(&self) -> (usize, usize) {
         (self.0 as usize / 11, self.0 as usize % 11)
     }
@@ -232,7 +235,8 @@ impl PwmManager {
         let mut new_pwm_bytes = [0u8; 256];
         for pwm_idx in 0..128 {
             for key_idx in 0..6 {
-                match self.get_key_state(KeyIndex(key_idx)) {
+                // TODO: this should be encoded as a new type; same issue below
+                match self.get_key_state(KeyIndex(key_idx + idx as u8 * 11)) {
                     KeyState::Pressing { pwm, .. } => {
                         if pwm.0 > pwm_idx {
                             new_pwm_bytes[pwm_idx as usize] |= 1 << key_idx
@@ -247,15 +251,15 @@ impl PwmManager {
                 }
             }
             for key_idx in 6..11 {
-                match self.get_key_state(KeyIndex(key_idx)) {
+                match self.get_key_state(KeyIndex(key_idx + idx as u8 * 11)) {
                     KeyState::Pressing { pwm, .. } => {
                         if pwm.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << key_idx
+                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << (key_idx + 4)
                         }
                     }
                     KeyState::Holding { .. } => {
                         if KeyPwm::HOLDING.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << key_idx
+                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << (key_idx + 4)
                         }
                     }
                     KeyState::Off | KeyState::Releasing { .. } | KeyState::Repeating { .. } => (),
@@ -265,12 +269,14 @@ impl PwmManager {
         let _ = self.spi.transfer(&mut new_pwm_bytes);
         self.set_cs_state(idx, PinState::High);
         self.subcontrollers[idx].needs_update = false;
+        debug!("Updated subcontroller {idx}");
     }
     fn set_key_state(&mut self, idx: KeyIndex, state: KeyState) {
         let (subcontroller_idx, key_idx) = idx.get_subcontroller_idxs();
         let subcontroller = &mut self.subcontrollers[subcontroller_idx];
         let current_state = &mut subcontroller.keys[key_idx];
         if !current_state.same_state(&state) {
+            debug!("Setting {idx:?} to new state {state:?}");
             subcontroller.needs_update = true;
         }
         *current_state = state;
@@ -340,6 +346,33 @@ impl PwmManager {
     }
 }
 
+// TODO get rid of the log crate, too much complexity for a simple serial logger
+struct Logger;
+
+impl Logger {
+    fn init() {
+        log::set_logger(&LOGGER).unwrap();
+        log::set_max_level(log::LevelFilter::Debug);
+    }
+}
+
+impl Log for Logger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &Record) {
+        unsafe { SERIAL.get_mut() }
+            .unwrap()
+            .write_fmt(format_args!("{}\n", record.args()))
+            .unwrap()
+    }
+    fn flush(&self) {}
+}
+
+static mut BUS_ALLOCATOR: OnceCell<UsbBusAllocator<BusAdapter>> = OnceCell::new();
+static mut SERIAL: OnceCell<SerialPort<'static, BusAdapter>> = OnceCell::new();
+static LOGGER: Logger = Logger;
+
 static EP_MEM: EndpointMemory<1024> = EndpointMemory::new();
 static EP_STATE: EndpointState = EndpointState::max_endpoints();
 
@@ -351,6 +384,7 @@ const SCK_HZ: u32 = 512_000;
 
 #[bsp::rt::entry]
 fn main() -> ! {
+    Logger::init();
     let instances = board::instances();
     let board::Resources {
         mut gpio1,
@@ -391,17 +425,28 @@ fn main() -> ! {
 
     clock_gate::usb().set(&mut ccm, clock_gate::Setting::On);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
-    let bus_allocator = UsbBusAllocator::new(bus_adapter);
-    let mut midi = MidiClass::new(&bus_allocator, 1, 1).unwrap();
-    let mut device = UsbDeviceBuilder::new(&bus_allocator, UsbVidPid(0x1234, 0x5678))
-        .product("Bothoven")
-        .device_class(0x00)
-        .device_sub_class(0x00)
-        .build();
+    unsafe {
+        let _ = BUS_ALLOCATOR.set(UsbBusAllocator::new(bus_adapter));
+    }
+    let mut midi = MidiClass::new(unsafe { BUS_ALLOCATOR.get() }.unwrap(), 1, 1).unwrap();
+    unsafe {
+        let _ = SERIAL.set(SerialPort::new_with_interface_names(
+            BUS_ALLOCATOR.get().unwrap(),
+            Some("CDC Control"),
+            Some("CDC Data"),
+        ));
+    }
+    let mut device = UsbDeviceBuilder::new(
+        unsafe { BUS_ALLOCATOR.get() }.unwrap(),
+        UsbVidPid(0xffff, 0x0001),
+    )
+    .strings(&[StringDescriptors::new(LangID::EN).product("Bothoven")])
+    .unwrap()
+    .build();
     loop {
-        if device.poll(&mut [&mut midi]) {
+        if device.poll(&mut [&mut midi, unsafe { SERIAL.get_mut() }.unwrap()]) {
             let state = device.state();
-            if state == usb_device::device::UsbDeviceState::Configured {
+            if state == UsbDeviceState::Configured {
                 break;
             }
         }
@@ -426,10 +471,12 @@ fn main() -> ! {
     };
     pwm_manager.reset();
 
+    debug!("Bothoven ready");
+
     loop {
         pwm_manager.tick();
 
-        if !device.poll(&mut [&mut midi]) {
+        if !device.poll(&mut [&mut midi, unsafe { SERIAL.get_mut() }.unwrap()]) {
             continue;
         }
 
@@ -441,8 +488,14 @@ fn main() -> ! {
                 if let Ok(packet) = packet {
                     match packet.message {
                         Message::NoteOn(CHANNEL, note, velocity) => {
+                            debug!(
+                                "On {note:?} ({}), {velocity:?}",
+                                <Note as Into<u8>>::into(note)
+                            );
                             if let Ok(key_idx) = note.try_into() {
-                                match pwm_manager.get_key_state(key_idx) {
+                                let key_state = pwm_manager.get_key_state(key_idx);
+                                debug!("{key_idx:?} in {key_state:?}");
+                                match key_state {
                                     KeyState::Off => pwm_manager.set_key_state(
                                         key_idx,
                                         KeyState::Pressing {
@@ -464,8 +517,11 @@ fn main() -> ! {
                             }
                         }
                         Message::NoteOff(CHANNEL, note, _) => {
+                            debug!("Off {note:?} ({})", <Note as Into<u8>>::into(note));
                             if let Ok(key_idx) = note.try_into() {
-                                match pwm_manager.get_key_state(key_idx) {
+                                let key_state = pwm_manager.get_key_state(key_idx);
+                                debug!("{key_idx:?} in {key_state:?}");
+                                match key_state {
                                     KeyState::Pressing { .. }
                                     | KeyState::Holding { .. }
                                     | KeyState::Repeating { .. } => pwm_manager.set_key_state(

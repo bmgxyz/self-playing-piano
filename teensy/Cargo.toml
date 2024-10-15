@@ -9,11 +9,17 @@ cortex-m = "0.7"
 embedded-hal = "0.2"
 fugit = "0.3.7"
 log = "0.4"
-usbd-midi = { git = "https://github.com/bmgxyz/usbd-midi", branch = "downgrade-usb-device" }
-teensy4-bsp = { version = "0.5", features = ["rt"] }
-teensy4-panic = { version = "0.2", features = ["log"] }
-usb-device = "0.2.9"
-usbd-serial = "0.1.1"
+usbd-midi = "0.3.0"
+teensy4-panic = "0.2"
+usb-device = { version = "0.3.2", features = ["control-buffer-256"] }
+usbd-serial = "0.2.2"
 
-[profile.release.build-override]
-opt-level = 0
+[dependencies.teensy4-bsp]
+git = "https://github.com/bmgxyz/teensy4-rs"
+branch = "bump-hal"
+features = ["rt"]
+
+[profile.dev]
+# Without these changes, the code is too slow and panics after a few notes
+opt-level = 3
+overflow-checks = false

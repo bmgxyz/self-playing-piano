@@ -11,7 +11,9 @@ transition-diagram.svg: transition-diagram.gv
 flash: controller.hex
 	sudo $(shell command -v teensy_loader_cli) --mcu=TEENSY41 -s -w controller.hex
 
+watch:
+	sudo cat /dev/ttyACM0
+
 clean:
 	cargo clean
-	rm *.hex
-	rm *.svg
+	rm -f *.hex *.svg

@@ -1,4 +1,6 @@
 digraph {
+  node [shape = "rect"]
+
   OFF -> PRESSING ["label" = "note on"]
   OFF -> OFF ["label" = "note off"]
 
