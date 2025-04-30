@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["Bradley Gannon <bradley@bradleygannon.com>"]
 edition = "2021"
 
+[[bin]]
+name = "controller"
+test = false
+doctest = false
+bench = false
+
 [dependencies]
 cortex-m = "0.7"
 embedded-hal = "0.2"
