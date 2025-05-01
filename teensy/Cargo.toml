@@ -11,14 +11,15 @@ doctest = false
 bench = false
 
 [dependencies]
-cortex-m = "0.7"
-embedded-hal = "0.2"
+cortex-m = "0.7.7"
+embedded-hal = "1.0.0"
 fugit = "0.3.7"
-log = "0.4"
-usbd-midi = "0.3.0"
-teensy4-panic = "0.2"
-usb-device = { version = "0.3.2", features = ["control-buffer-256"] }
+log = "0.4.27"
+midi-convert = "0.2.0"
+teensy4-panic = "0.2.3"
+usbd-midi = "0.5.0"
 usbd-serial = "0.2.2"
+usb-device = { version = "0.3.2", features = ["control-buffer-256"] }
 
 [dependencies.teensy4-bsp]
 git = "https://github.com/bmgxyz/teensy4-rs"

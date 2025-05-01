@@ -1,14 +1,17 @@
 #![no_std]
 #![no_main]
 
-use embedded_hal::blocking::i2c::Write as I2CWrite;
+use embedded_hal::i2c::I2c;
 use log::{debug, warn, Log, Record};
+use midi_convert::{
+    midi_types::{Channel, MidiMessage, Note, Value7},
+    parse::MidiTryParseSlice,
+};
 use teensy4_bsp::{
     self as bsp,
     board::Lpi2c1,
     hal::{
-        ccm::{analog::pll2, clock_gate, lpspi_clk},
-        lpspi::{BitOrder, SamplePoint},
+        ccm::{clock_gate, lpi2c_clk},
         usbd::{BusAdapter, EndpointMemory, EndpointState, Speed},
     },
 };
@@ -27,14 +30,7 @@ use usb_device::{
     class_prelude::*,
     device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
 };
-use usbd_midi::{
-    data::{
-        byte::u7::U7,
-        midi::{channel::Channel, message::Message, notes::Note},
-        usb_midi::midi_packet_reader::MidiPacketBufferReader,
-    },
-    midi_device::MidiClass,
-};
+use usbd_midi::{UsbMidiClass, UsbMidiPacketReader};
 use usbd_serial::{embedded_io::Write as UsbSerialWrite, SerialPort};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -69,8 +65,8 @@ impl TryFrom<u8> for KeyPwm {
     }
 }
 
-impl From<U7> for KeyPwm {
-    fn from(value: U7) -> Self {
+impl From<Value7> for KeyPwm {
+    fn from(value: Value7) -> Self {
         let velocity: u8 = value.into();
         match velocity {
             0 => KeyPwm::OFF,
@@ -349,11 +345,7 @@ static LOGGER: Logger = Logger;
 static EP_MEM: EndpointMemory<1024> = EndpointMemory::new();
 static EP_STATE: EndpointState = EndpointState::max_endpoints();
 
-const CHANNEL: Channel = Channel::Channel1;
-
-const LPSPI_CLK_DIVIDER: u32 = 4;
-const LPSPI_CLK_HZ: u32 = pll2::FREQUENCY / LPSPI_CLK_DIVIDER;
-const SCK_HZ: u32 = 512_000;
+const CHANNEL: Channel = Channel::C1;
 
 #[bsp::rt::entry]
 fn main() -> ! {
@@ -363,31 +355,15 @@ fn main() -> ! {
         mut ccm,
         mut gpt1,
         lpi2c1,
-        lpspi4,
         pins,
         usb,
         ..
     } = board::t41(instances);
 
-    clock_gate::lpspi::<2>().set(&mut ccm, clock_gate::OFF);
-    lpspi_clk::set_selection(&mut ccm, lpspi_clk::Selection::Pll2);
-    lpspi_clk::set_divider(&mut ccm, LPSPI_CLK_DIVIDER);
-    clock_gate::lpspi::<2>().set(&mut ccm, clock_gate::ON);
-    let mut spi = board::lpspi(
-        lpspi4,
-        board::LpspiPins {
-            sdo: pins.p11,
-            sdi: pins.p12,
-            sck: pins.p13,
-            pcs0: pins.p10,
-        },
-        SCK_HZ,
-    );
-    spi.set_bit_order(BitOrder::Msb);
-    spi.disabled(|spi| {
-        spi.set_clock_hz(LPSPI_CLK_HZ, SCK_HZ);
-        spi.set_sample_point(SamplePoint::Edge);
-    });
+    clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::OFF);
+    lpi2c_clk::set_selection(&mut ccm, lpi2c_clk::Selection::Oscillator);
+    lpi2c_clk::set_divider(&mut ccm, lpi2c_clk::MIN_DIVIDER);
+    clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::ON);
 
     let i2c: Lpi2c1 = board::lpi2c(lpi2c1, pins.p19, pins.p18, board::Lpi2cClockSpeed::KHz100);
 
@@ -401,7 +377,7 @@ fn main() -> ! {
     unsafe {
         let _ = BUS_ALLOCATOR.set(UsbBusAllocator::new(bus_adapter));
     }
-    let mut midi = MidiClass::new(unsafe { BUS_ALLOCATOR.get() }.unwrap(), 1, 1).unwrap();
+    let mut midi = UsbMidiClass::new(unsafe { BUS_ALLOCATOR.get() }.unwrap(), 1, 1).unwrap();
     unsafe {
         let _ = SERIAL.set(SerialPort::new_with_interface_names(
             BUS_ALLOCATOR.get().unwrap(),
@@ -447,11 +423,21 @@ fn main() -> ! {
         let mut buffer = [0; 64];
 
         if let Ok(size) = midi.read(&mut buffer) {
-            let buffer_reader = MidiPacketBufferReader::new(&buffer, size);
+            let buffer_reader = UsbMidiPacketReader::new(&buffer, size);
             for packet in buffer_reader.into_iter() {
                 if let Ok(packet) = packet {
-                    match packet.message {
-                        Message::NoteOn(CHANNEL, note, velocity) => {
+                    let message = match MidiMessage::try_parse_slice(packet.payload_bytes()) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!("Failed to parse MIDI packet {packet:?}: {e:?}");
+                            continue;
+                        }
+                    };
+                    match message {
+                        MidiMessage::NoteOn(channel, note, velocity) => {
+                            if channel != CHANNEL {
+                                continue;
+                            }
                             debug!(
                                 "On {note:?} ({}), {velocity:?}",
                                 <Note as Into<u8>>::into(note)
@@ -480,7 +466,10 @@ fn main() -> ! {
                                 }
                             }
                         }
-                        Message::NoteOff(CHANNEL, note, _) => {
+                        MidiMessage::NoteOff(channel, note, _) => {
+                            if channel != CHANNEL {
+                                continue;
+                            }
                             debug!("Off {note:?} ({})", <Note as Into<u8>>::into(note));
                             if let Ok(key_idx) = note.try_into() {
                                 let key_state = pwm_manager.get_key_state(key_idx);
