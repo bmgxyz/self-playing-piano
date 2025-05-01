@@ -2,7 +2,7 @@
 #![no_main]
 
 use embedded_hal::i2c::I2c;
-use log::{debug, warn, Log, Record};
+use heapless::Vec;
 use midi_convert::{
     midi_types::{Channel, MidiMessage, Note, Value7},
     parse::MidiTryParseSlice,
@@ -22,7 +22,7 @@ use bsp::{
     hal::gpt::{ClockSource, Gpt, Mode},
 };
 use core::{
-    cell::OnceCell,
+    fmt::{Error, Write},
     ops::{Index, IndexMut},
     slice::{Iter, IterMut},
 };
@@ -31,7 +31,7 @@ use usb_device::{
     device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
 };
 use usbd_midi::{UsbMidiClass, UsbMidiPacketReader};
-use usbd_serial::{embedded_io::Write as UsbSerialWrite, SerialPort};
+use usbd_serial::SerialPort;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 struct KeyPwm(u8);
@@ -236,7 +236,7 @@ impl PwmManager {
     fn get_key_state(&self, idx: KeyIndex) -> KeyState {
         self.current_key_states[idx]
     }
-    fn tick(&mut self) {
+    fn tick(&mut self, logger: &mut Logger) {
         let current = self.tick_timer.count();
         let elapsed = if self.tick_timer.is_rollover() {
             self.tick_timer.clear_rollover();
@@ -299,7 +299,7 @@ impl PwmManager {
                 let key_idx = match idx.try_into() {
                     Ok(i) => <KeyIndex as Into<u8>>::into(i),
                     Err(_) => {
-                        warn!("Failed to update key at index {}", idx);
+                        warn!(logger, "Failed to update key at index {}", idx);
                         continue;
                     }
                 };
@@ -307,7 +307,7 @@ impl PwmManager {
                 let local_idx = key_idx % 11;
                 let pwm: KeyPwm = (*next).into();
                 if let Err(e) = self.i2c.write(subcontroller_addr, &[local_idx, pwm.into()]) {
-                    warn!("Failed to update key at index {idx} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
+                    warn!(logger, "Failed to update key at index {idx} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
                 }
                 *curr = *next;
             }
@@ -315,41 +315,70 @@ impl PwmManager {
     }
 }
 
-// TODO get rid of the log crate, too much complexity for a simple serial logger
-struct Logger;
-
-impl Logger {
-    fn init() {
-        log::set_logger(&LOGGER).unwrap();
-        log::set_max_level(log::LevelFilter::Debug);
-    }
-}
-
-impl Log for Logger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
-    }
-    fn log(&self, record: &Record) {
-        unsafe { SERIAL.get_mut() }
-            .unwrap()
-            .write_fmt(format_args!("{}\n", record.args()))
-            .unwrap()
-    }
-    fn flush(&self) {}
-}
-
-static mut BUS_ALLOCATOR: OnceCell<UsbBusAllocator<BusAdapter>> = OnceCell::new();
-static mut SERIAL: OnceCell<SerialPort<'static, BusAdapter>> = OnceCell::new();
-static LOGGER: Logger = Logger;
-
 static EP_MEM: EndpointMemory<1024> = EndpointMemory::new();
 static EP_STATE: EndpointState = EndpointState::max_endpoints();
 
 const CHANNEL: Channel = Channel::C1;
 
+struct Logger {
+    logs_to_write: Vec<u8, 1024>,
+}
+
+impl Logger {
+    fn new() -> Self {
+        Logger {
+            logs_to_write: Vec::new(),
+        }
+    }
+}
+
+impl Write for Logger {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self.logs_to_write.extend_from_slice(s.as_bytes()) {
+            Ok(()) => core::fmt::Result::Ok(()),
+            Err(_) => core::fmt::Result::Err(Error),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! trace {
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = write!($logger, "TRACE: {}", format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = write!($logger, "DEBUG: {}", format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! info {
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = write!($logger, "INFO: {}", format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = write!($logger, "WARN: {}", format_args!($($arg)*));
+    }};
+}
+
+#[macro_export]
+macro_rules! error {
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = write!($logger, "ERROR: {}", format_args!($($arg)*));
+    }};
+}
+
 #[bsp::rt::entry]
 fn main() -> ! {
-    Logger::init();
+    let mut logger = Logger::new();
     let instances = board::instances();
     let board::Resources {
         mut ccm,
@@ -374,26 +403,16 @@ fn main() -> ! {
 
     clock_gate::usb().set(&mut ccm, clock_gate::Setting::On);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
-    unsafe {
-        let _ = BUS_ALLOCATOR.set(UsbBusAllocator::new(bus_adapter));
-    }
-    let mut midi = UsbMidiClass::new(unsafe { BUS_ALLOCATOR.get() }.unwrap(), 1, 1).unwrap();
-    unsafe {
-        let _ = SERIAL.set(SerialPort::new_with_interface_names(
-            BUS_ALLOCATOR.get().unwrap(),
-            Some("CDC Control"),
-            Some("CDC Data"),
-        ));
-    }
-    let mut device = UsbDeviceBuilder::new(
-        unsafe { BUS_ALLOCATOR.get() }.unwrap(),
-        UsbVidPid(0xffff, 0x0001),
-    )
-    .strings(&[StringDescriptors::new(LangID::EN).product("Bothoven")])
-    .unwrap()
-    .build();
+    let bus_allocator = UsbBusAllocator::new(bus_adapter);
+    let mut midi = UsbMidiClass::new(&bus_allocator, 1, 1).unwrap();
+    let mut serial =
+        SerialPort::new_with_interface_names(&bus_allocator, Some("CDC Control"), Some("CDC Data"));
+    let mut device = UsbDeviceBuilder::new(&bus_allocator, UsbVidPid(0xffff, 0x0001))
+        .strings(&[StringDescriptors::new(LangID::EN).product("Bothoven")])
+        .unwrap()
+        .build();
     loop {
-        if device.poll(&mut [&mut midi, unsafe { SERIAL.get_mut() }.unwrap()]) {
+        if device.poll(&mut [&mut midi, &mut serial]) {
             let state = device.state();
             if state == UsbDeviceState::Configured {
                 break;
@@ -411,12 +430,16 @@ fn main() -> ! {
         _pedal: KeyState::default(),
     };
 
-    debug!("Bothoven ready");
+    debug!(logger, "Bothoven ready");
 
     loop {
-        pwm_manager.tick();
+        if let Ok(len) = serial.write(&logger.logs_to_write) {
+            logger.logs_to_write.rotate_left(len);
+            logger.logs_to_write.truncate(len);
+        }
+        pwm_manager.tick(&mut logger);
 
-        if !device.poll(&mut [&mut midi, unsafe { SERIAL.get_mut() }.unwrap()]) {
+        if !device.poll(&mut [&mut midi, &mut serial]) {
             continue;
         }
 
@@ -429,7 +452,7 @@ fn main() -> ! {
                     let message = match MidiMessage::try_parse_slice(packet.payload_bytes()) {
                         Ok(m) => m,
                         Err(e) => {
-                            warn!("Failed to parse MIDI packet {packet:?}: {e:?}");
+                            warn!(logger, "Failed to parse MIDI packet {packet:?}: {e:?}");
                             continue;
                         }
                     };
@@ -439,12 +462,13 @@ fn main() -> ! {
                                 continue;
                             }
                             debug!(
+                                logger,
                                 "On {note:?} ({}), {velocity:?}",
                                 <Note as Into<u8>>::into(note)
                             );
                             if let Ok(key_idx) = note.try_into() {
                                 let key_state = pwm_manager.get_key_state(key_idx);
-                                debug!("{key_idx:?} in {key_state:?}");
+                                debug!(logger, "{key_idx:?} in {key_state:?}");
                                 match key_state {
                                     KeyState::Off => pwm_manager.set_key_state(
                                         key_idx,
@@ -470,10 +494,10 @@ fn main() -> ! {
                             if channel != CHANNEL {
                                 continue;
                             }
-                            debug!("Off {note:?} ({})", <Note as Into<u8>>::into(note));
+                            debug!(logger, "Off {note:?} ({})", <Note as Into<u8>>::into(note));
                             if let Ok(key_idx) = note.try_into() {
                                 let key_state = pwm_manager.get_key_state(key_idx);
-                                debug!("{key_idx:?} in {key_state:?}");
+                                debug!(logger, "{key_idx:?} in {key_state:?}");
                                 match key_state {
                                     KeyState::Pressing { .. }
                                     | KeyState::Holding { .. }
