@@ -1,22 +1,14 @@
 #![no_std]
 #![no_main]
 
-use cortex_m::prelude::_embedded_hal_blocking_spi_Transfer;
-use embedded_hal::digital::v2::{OutputPin, PinState};
-use log::{debug, Log, Record};
+use embedded_hal::blocking::i2c::Write as I2CWrite;
+use log::{debug, warn, Log, Record};
 use teensy4_bsp::{
     self as bsp,
-    board::LpspiPins,
+    board::Lpi2c1,
     hal::{
         ccm::{analog::pll2, clock_gate, lpspi_clk},
-        gpio::Output,
-        iomuxc::pads::{
-            gpio_ad_b0::{GPIO_AD_B0_02, GPIO_AD_B0_03},
-            gpio_b0::{GPIO_B0_00, GPIO_B0_01, GPIO_B0_02, GPIO_B0_03, GPIO_B0_10},
-            gpio_b1::GPIO_B1_01,
-            gpio_emc::{GPIO_EMC_04, GPIO_EMC_05, GPIO_EMC_06, GPIO_EMC_08},
-        },
-        lpspi::{BitOrder, Lpspi, SamplePoint},
+        lpspi::{BitOrder, SamplePoint},
         usbd::{BusAdapter, EndpointMemory, EndpointState, Speed},
     },
 };
@@ -26,7 +18,11 @@ use bsp::{
     board,
     hal::gpt::{ClockSource, Gpt, Mode},
 };
-use core::{cell::OnceCell, ops::Index};
+use core::{
+    cell::OnceCell,
+    ops::{Index, IndexMut},
+    slice::{Iter, IterMut},
+};
 use usb_device::{
     class_prelude::*,
     device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
@@ -39,7 +35,7 @@ use usbd_midi::{
     },
     midi_device::MidiClass,
 };
-use usbd_serial::{embedded_io::Write, SerialPort};
+use usbd_serial::{embedded_io::Write as UsbSerialWrite, SerialPort};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 struct KeyPwm(u8);
@@ -86,18 +82,21 @@ impl From<U7> for KeyPwm {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Subcontroller {
-    needs_update: bool,
-    keys: [KeyState; 11],
+impl From<KeyState> for KeyPwm {
+    fn from(value: KeyState) -> Self {
+        match value {
+            KeyState::Off => KeyPwm::OFF,
+            KeyState::Pressing { pwm, .. } => pwm,
+            KeyState::Holding { .. } => KeyPwm::HOLDING,
+            KeyState::Repeating { pwm, .. } => pwm,
+            KeyState::Releasing { .. } => KeyPwm::OFF,
+        }
+    }
 }
 
-impl Default for Subcontroller {
-    fn default() -> Self {
-        Subcontroller {
-            needs_update: false,
-            keys: [KeyState::default(); 11],
-        }
+impl From<KeyPwm> for u8 {
+    fn from(value: KeyPwm) -> Self {
+        value.0
     }
 }
 
@@ -107,17 +106,17 @@ struct KeyIndex(u8);
 impl KeyIndex {
     const MIN_MIDI_PITCH: u8 = 21;
     const NUM_KEYS: u8 = 88;
+}
 
-    // TODO: this should be encoded as a new type
-    fn get_subcontroller_idxs(&self) -> (usize, usize) {
-        (self.0 as usize / 11, self.0 as usize % 11)
+impl From<KeyIndex> for usize {
+    fn from(value: KeyIndex) -> Self {
+        value.0.into()
     }
 }
 
-impl Index<KeyIndex> for Subcontroller {
-    type Output = KeyState;
-    fn index(&self, index: KeyIndex) -> &Self::Output {
-        &self.keys[index.0 as usize]
+impl From<KeyIndex> for u8 {
+    fn from(value: KeyIndex) -> Self {
+        value.0.into()
     }
 }
 
@@ -188,21 +187,44 @@ impl Default for KeyState {
     }
 }
 
-type Spi = Lpspi<LpspiPins<GPIO_B0_02, GPIO_B0_01, GPIO_B0_03, GPIO_B0_00>, 4>;
+struct AllKeys([KeyState; 88]);
+
+impl Default for AllKeys {
+    fn default() -> Self {
+        AllKeys([KeyState::default(); 88])
+    }
+}
+
+impl Index<KeyIndex> for AllKeys {
+    type Output = KeyState;
+    fn index(&self, index: KeyIndex) -> &Self::Output {
+        let idx: usize = index.into();
+        &self.0[idx]
+    }
+}
+
+impl IndexMut<KeyIndex> for AllKeys {
+    fn index_mut(&mut self, index: KeyIndex) -> &mut Self::Output {
+        let idx: usize = index.into();
+        &mut self.0[idx]
+    }
+}
+
+impl AllKeys {
+    fn iter(&self) -> Iter<'_, KeyState> {
+        self.0.iter()
+    }
+    fn iter_mut(&mut self) -> IterMut<'_, KeyState> {
+        self.0.iter_mut()
+    }
+}
 
 struct PwmManager {
-    spi: Spi,
-    cs0: Output<GPIO_AD_B0_03>,
-    cs1: Output<GPIO_AD_B0_02>,
-    cs2: Output<GPIO_EMC_04>,
-    cs3: Output<GPIO_EMC_05>,
-    cs4: Output<GPIO_EMC_06>,
-    cs5: Output<GPIO_EMC_08>,
-    cs6: Output<GPIO_B0_10>,
-    cs7: Output<GPIO_B1_01>,
+    i2c: Lpi2c1,
     tick_timer: Gpt<1>,
     last_tick: u32,
-    subcontrollers: [Subcontroller; 8],
+    current_key_states: AllKeys,
+    next_key_states: AllKeys,
     _pedal: KeyState,
 }
 
@@ -212,78 +234,11 @@ impl PwmManager {
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
 
-    fn reset(&mut self) {
-        for idx in 0..self.subcontrollers.len() {
-            self.set_cs_state(idx, PinState::High);
-        }
-    }
-    fn set_cs_state(&mut self, idx: usize, state: PinState) {
-        let _ = match idx {
-            0 => self.cs0.set_state(state),
-            1 => self.cs1.set_state(state),
-            2 => self.cs2.set_state(state),
-            3 => self.cs3.set_state(state),
-            4 => self.cs4.set_state(state),
-            5 => self.cs5.set_state(state),
-            6 => self.cs6.set_state(state),
-            7 => self.cs7.set_state(state),
-            _ => Ok(()),
-        };
-    }
-    fn update_subcontroller(&mut self, idx: usize) {
-        self.set_cs_state(idx, PinState::Low);
-        let mut new_pwm_bytes = [0u8; 256];
-        for pwm_idx in 0..128 {
-            for key_idx in 0..6 {
-                // TODO: this should be encoded as a new type; same issue below
-                match self.get_key_state(KeyIndex(key_idx + idx as u8 * 11)) {
-                    KeyState::Pressing { pwm, .. } => {
-                        if pwm.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize] |= 1 << key_idx
-                        }
-                    }
-                    KeyState::Holding { .. } => {
-                        if KeyPwm::HOLDING.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize] |= 1 << key_idx
-                        }
-                    }
-                    KeyState::Off | KeyState::Releasing { .. } | KeyState::Repeating { .. } => (),
-                }
-            }
-            for key_idx in 6..11 {
-                match self.get_key_state(KeyIndex(key_idx + idx as u8 * 11)) {
-                    KeyState::Pressing { pwm, .. } => {
-                        if pwm.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << (key_idx + 4)
-                        }
-                    }
-                    KeyState::Holding { .. } => {
-                        if KeyPwm::HOLDING.0 > pwm_idx {
-                            new_pwm_bytes[pwm_idx as usize + 128] |= 1 << (key_idx + 4)
-                        }
-                    }
-                    KeyState::Off | KeyState::Releasing { .. } | KeyState::Repeating { .. } => (),
-                }
-            }
-        }
-        let _ = self.spi.transfer(&mut new_pwm_bytes);
-        self.set_cs_state(idx, PinState::High);
-        self.subcontrollers[idx].needs_update = false;
-        debug!("Updated subcontroller {idx}");
-    }
     fn set_key_state(&mut self, idx: KeyIndex, state: KeyState) {
-        let (subcontroller_idx, key_idx) = idx.get_subcontroller_idxs();
-        let subcontroller = &mut self.subcontrollers[subcontroller_idx];
-        let current_state = &mut subcontroller.keys[key_idx];
-        if !current_state.same_state(&state) {
-            debug!("Setting {idx:?} to new state {state:?}");
-            subcontroller.needs_update = true;
-        }
-        *current_state = state;
+        self.next_key_states[idx] = state;
     }
     fn get_key_state(&self, idx: KeyIndex) -> KeyState {
-        let (subcontroller_idx, key_idx) = idx.get_subcontroller_idxs();
-        self.subcontrollers[subcontroller_idx].keys[key_idx]
+        self.current_key_states[idx]
     }
     fn tick(&mut self) {
         let current = self.tick_timer.count();
@@ -338,9 +293,27 @@ impl PwmManager {
                 }
             }
         }
-        for idx in 0..self.subcontrollers.len() {
-            if self.subcontrollers[idx].needs_update {
-                self.update_subcontroller(idx);
+        for (idx, (curr, next)) in self
+            .current_key_states
+            .iter_mut()
+            .zip(self.next_key_states.iter())
+            .enumerate()
+        {
+            if !curr.same_state(next) {
+                let key_idx = match idx.try_into() {
+                    Ok(i) => <KeyIndex as Into<u8>>::into(i),
+                    Err(_) => {
+                        warn!("Failed to update key at index {}", idx);
+                        continue;
+                    }
+                };
+                let subcontroller_addr = (key_idx / 11) << 1;
+                let local_idx = key_idx % 11;
+                let pwm: KeyPwm = (*next).into();
+                if let Err(e) = self.i2c.write(subcontroller_addr, &[local_idx, pwm.into()]) {
+                    warn!("Failed to update key at index {idx} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
+                }
+                *curr = *next;
             }
         }
     }
@@ -387,11 +360,9 @@ fn main() -> ! {
     Logger::init();
     let instances = board::instances();
     let board::Resources {
-        mut gpio1,
-        mut gpio2,
-        mut gpio4,
         mut ccm,
         mut gpt1,
+        lpi2c1,
         lpspi4,
         pins,
         usb,
@@ -417,6 +388,8 @@ fn main() -> ! {
         spi.set_clock_hz(LPSPI_CLK_HZ, SCK_HZ);
         spi.set_sample_point(SamplePoint::Edge);
     });
+
+    let i2c: Lpi2c1 = board::lpi2c(lpi2c1, pins.p19, pins.p18, board::Lpi2cClockSpeed::KHz100);
 
     gpt1.set_clock_source(ClockSource::PeripheralClock);
     gpt1.set_mode(Mode::FreeRunning);
@@ -453,23 +426,14 @@ fn main() -> ! {
     }
     device.bus().configure();
 
-    let subcontrollers = [Subcontroller::default(); 8];
     let mut pwm_manager = PwmManager {
-        spi,
-        cs0: gpio1.output(pins.p0),
-        cs1: gpio1.output(pins.p1),
-        cs2: gpio4.output(pins.p2),
-        cs3: gpio4.output(pins.p3),
-        cs4: gpio4.output(pins.p4),
-        cs5: gpio4.output(pins.p5),
-        cs6: gpio2.output(pins.p6),
-        cs7: gpio2.output(pins.p7),
+        i2c,
+        current_key_states: AllKeys::default(),
+        next_key_states: AllKeys::default(),
         tick_timer: gpt1,
         last_tick: 0,
-        subcontrollers,
         _pedal: KeyState::default(),
     };
-    pwm_manager.reset();
 
     debug!("Bothoven ready");
 
