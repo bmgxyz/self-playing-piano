@@ -112,7 +112,7 @@ impl From<KeyIndex> for usize {
 
 impl From<KeyIndex> for u8 {
     fn from(value: KeyIndex) -> Self {
-        value.0.into()
+        value.0
     }
 }
 
@@ -155,31 +155,36 @@ impl TryFrom<u8> for KeyIndex {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 enum KeyState {
+    #[default]
     Off,
-    Pressing { timeout: u32, pwm: KeyPwm },
-    Holding { timeout: u32 },
-    Repeating { timeout: u32, pwm: KeyPwm },
-    Releasing { timeout: u32 },
+    Pressing {
+        timeout: u32,
+        pwm: KeyPwm,
+    },
+    Holding {
+        timeout: u32,
+    },
+    Repeating {
+        timeout: u32,
+        pwm: KeyPwm,
+    },
+    Releasing {
+        timeout: u32,
+    },
 }
 
 impl KeyState {
     fn same_state(&self, other: &KeyState) -> bool {
-        match (self, other) {
+        matches!(
+            (self, other),
             (KeyState::Off, KeyState::Off)
-            | (KeyState::Pressing { .. }, KeyState::Pressing { .. })
-            | (KeyState::Holding { .. }, KeyState::Holding { .. })
-            | (KeyState::Repeating { .. }, KeyState::Repeating { .. })
-            | (KeyState::Releasing { .. }, KeyState::Releasing { .. }) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Default for KeyState {
-    fn default() -> Self {
-        KeyState::Off
+                | (KeyState::Pressing { .. }, KeyState::Pressing { .. })
+                | (KeyState::Holding { .. }, KeyState::Holding { .. })
+                | (KeyState::Repeating { .. }, KeyState::Repeating { .. })
+                | (KeyState::Releasing { .. }, KeyState::Releasing { .. })
+        )
     }
 }
 
@@ -447,72 +452,70 @@ fn main() -> ! {
 
         if let Ok(size) = midi.read(&mut buffer) {
             let buffer_reader = UsbMidiPacketReader::new(&buffer, size);
-            for packet in buffer_reader.into_iter() {
-                if let Ok(packet) = packet {
-                    let message = match MidiMessage::try_parse_slice(packet.payload_bytes()) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            warn!(logger, "Failed to parse MIDI packet {packet:?}: {e:?}");
+            for packet in buffer_reader.into_iter().flatten() {
+                let message = match MidiMessage::try_parse_slice(packet.payload_bytes()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(logger, "Failed to parse MIDI packet {packet:?}: {e:?}");
+                        continue;
+                    }
+                };
+                match message {
+                    MidiMessage::NoteOn(channel, note, velocity) => {
+                        if channel != CHANNEL {
                             continue;
                         }
-                    };
-                    match message {
-                        MidiMessage::NoteOn(channel, note, velocity) => {
-                            if channel != CHANNEL {
-                                continue;
-                            }
-                            debug!(
-                                logger,
-                                "On {note:?} ({}), {velocity:?}",
-                                <Note as Into<u8>>::into(note)
-                            );
-                            if let Ok(key_idx) = note.try_into() {
-                                let key_state = pwm_manager.get_key_state(key_idx);
-                                debug!(logger, "{key_idx:?} in {key_state:?}");
-                                match key_state {
-                                    KeyState::Off => pwm_manager.set_key_state(
+                        debug!(
+                            logger,
+                            "On {note:?} ({}), {velocity:?}",
+                            <Note as Into<u8>>::into(note)
+                        );
+                        if let Ok(key_idx) = note.try_into() {
+                            let key_state = pwm_manager.get_key_state(key_idx);
+                            debug!(logger, "{key_idx:?} in {key_state:?}");
+                            match key_state {
+                                KeyState::Off => pwm_manager.set_key_state(
+                                    key_idx,
+                                    KeyState::Pressing {
+                                        timeout: PwmManager::PRESS_TIMEOUT_US,
+                                        pwm: velocity.into(),
+                                    },
+                                ),
+                                KeyState::Holding { .. } | KeyState::Releasing { .. } => {
+                                    pwm_manager.set_key_state(
                                         key_idx,
-                                        KeyState::Pressing {
-                                            timeout: PwmManager::PRESS_TIMEOUT_US,
+                                        KeyState::Repeating {
+                                            timeout: PwmManager::REPEAT_TIMEOUT_US,
                                             pwm: velocity.into(),
                                         },
-                                    ),
-                                    KeyState::Holding { .. } | KeyState::Releasing { .. } => {
-                                        pwm_manager.set_key_state(
-                                            key_idx,
-                                            KeyState::Repeating {
-                                                timeout: PwmManager::REPEAT_TIMEOUT_US,
-                                                pwm: velocity.into(),
-                                            },
-                                        )
-                                    }
-                                    KeyState::Pressing { .. } | KeyState::Repeating { .. } => (),
+                                    )
                                 }
+                                KeyState::Pressing { .. } | KeyState::Repeating { .. } => (),
                             }
                         }
-                        MidiMessage::NoteOff(channel, note, _) => {
-                            if channel != CHANNEL {
-                                continue;
-                            }
-                            debug!(logger, "Off {note:?} ({})", <Note as Into<u8>>::into(note));
-                            if let Ok(key_idx) = note.try_into() {
-                                let key_state = pwm_manager.get_key_state(key_idx);
-                                debug!(logger, "{key_idx:?} in {key_state:?}");
-                                match key_state {
-                                    KeyState::Pressing { .. }
-                                    | KeyState::Holding { .. }
-                                    | KeyState::Repeating { .. } => pwm_manager.set_key_state(
-                                        key_idx,
-                                        KeyState::Releasing {
-                                            timeout: PwmManager::RELEASE_TIMEOUT_US,
-                                        },
-                                    ),
-                                    KeyState::Off | KeyState::Releasing { .. } => (),
-                                }
-                            }
-                        }
-                        _ => (),
                     }
+                    MidiMessage::NoteOff(channel, note, _) => {
+                        if channel != CHANNEL {
+                            continue;
+                        }
+                        debug!(logger, "Off {note:?} ({})", <Note as Into<u8>>::into(note));
+                        if let Ok(key_idx) = note.try_into() {
+                            let key_state = pwm_manager.get_key_state(key_idx);
+                            debug!(logger, "{key_idx:?} in {key_state:?}");
+                            match key_state {
+                                KeyState::Pressing { .. }
+                                | KeyState::Holding { .. }
+                                | KeyState::Repeating { .. } => pwm_manager.set_key_state(
+                                    key_idx,
+                                    KeyState::Releasing {
+                                        timeout: PwmManager::RELEASE_TIMEOUT_US,
+                                    },
+                                ),
+                                KeyState::Off | KeyState::Releasing { .. } => (),
+                            }
+                        }
+                    }
+                    _ => (),
                 }
             }
         }
