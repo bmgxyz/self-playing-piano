@@ -335,6 +335,10 @@ impl Logger {
             logs_to_write: Vec::new(),
         }
     }
+    fn advance(&mut self, len: usize) {
+        self.logs_to_write.rotate_left(len);
+        self.logs_to_write.truncate(self.logs_to_write.len() - len);
+    }
 }
 
 impl Write for Logger {
@@ -349,35 +353,35 @@ impl Write for Logger {
 #[macro_export]
 macro_rules! trace {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = write!($logger, "TRACE: {}", format_args!($($arg)*));
+        let _ = writeln!($logger, "TRACE: {}", format_args!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! debug {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = write!($logger, "DEBUG: {}", format_args!($($arg)*));
+        let _ = writeln!($logger, "DEBUG: {}", format_args!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! info {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = write!($logger, "INFO: {}", format_args!($($arg)*));
+        let _ = writeln!($logger, "INFO: {}", format_args!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! warn {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = write!($logger, "WARN: {}", format_args!($($arg)*));
+        let _ = writeln!($logger, "WARN: {}", format_args!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! error {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = write!($logger, "ERROR: {}", format_args!($($arg)*));
+        let _ = writeln!($logger, "ERROR: {}", format_args!($($arg)*));
     }};
 }
 
@@ -406,7 +410,7 @@ fn main() -> ! {
     gpt1.set_divider(1);
     gpt1.enable();
 
-    clock_gate::usb().set(&mut ccm, clock_gate::Setting::On);
+    clock_gate::usb().set(&mut ccm, clock_gate::ON);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
     let bus_allocator = UsbBusAllocator::new(bus_adapter);
     let mut midi = UsbMidiClass::new(&bus_allocator, 1, 1).unwrap();
@@ -439,8 +443,7 @@ fn main() -> ! {
 
     loop {
         if let Ok(len) = serial.write(&logger.logs_to_write) {
-            logger.logs_to_write.rotate_left(len);
-            logger.logs_to_write.truncate(len);
+            logger.advance(len);
         }
         pwm_manager.tick(&mut logger);
 

@@ -3,13 +3,13 @@ all: controller.hex \
 
 controller.hex: Cargo.lock Cargo.toml src/*
 	cargo build
-	rust-objcopy -O ihex target/thumbv7em-none-eabihf/debug/controller controller.hex
+	arm-none-eabihf-objcopy -O ihex target/thumbv7em-none-eabihf/debug/controller controller.hex
 
 transition-diagram.svg: transition-diagram.gv
 	dot transition-diagram.gv -Tsvg > transition-diagram.svg
 
 flash: controller.hex
-	sudo $(shell command -v teensy_loader_cli) --mcu=TEENSY41 -s -w controller.hex
+	teensy-loader-cli --mcu=TEENSY41 -vsw controller.hex
 
 watch:
 	sudo cat /dev/ttyACM0
