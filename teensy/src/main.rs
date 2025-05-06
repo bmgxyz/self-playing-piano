@@ -24,7 +24,6 @@ use bsp::{
 use core::{
     fmt::{Error, Write},
     ops::{Index, IndexMut},
-    slice::{Iter, IterMut},
 };
 use usb_device::{
     class_prelude::*,
@@ -101,7 +100,6 @@ struct KeyIndex(u8);
 
 impl KeyIndex {
     const MIN_MIDI_PITCH: u8 = 21;
-    const NUM_KEYS: u8 = 88;
 }
 
 impl From<KeyIndex> for usize {
@@ -147,7 +145,7 @@ impl TryFrom<u8> for KeyIndex {
     type Error = InvalidKeyIndex;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value < Self::NUM_KEYS {
+        if value < NUM_KEYS as u8 {
             Ok(KeyIndex(value))
         } else {
             Err(InvalidKeyIndex)
@@ -176,47 +174,27 @@ enum KeyState {
 }
 
 impl KeyState {
-    fn same_state(&self, other: &KeyState) -> bool {
-        matches!(
-            (self, other),
-            (KeyState::Off, KeyState::Off)
-                | (KeyState::Pressing { .. }, KeyState::Pressing { .. })
-                | (KeyState::Holding { .. }, KeyState::Holding { .. })
-                | (KeyState::Repeating { .. }, KeyState::Repeating { .. })
-                | (KeyState::Releasing { .. }, KeyState::Releasing { .. })
-        )
+    fn same_duty_cycle(&self, other: &KeyState) -> bool {
+        let pwm_self: KeyPwm = (*self).into();
+        let pwm_other = (*other).into();
+        pwm_self == pwm_other
     }
 }
 
-struct AllKeys([KeyState; 88]);
+const NUM_KEYS: usize = 88;
 
-impl Default for AllKeys {
-    fn default() -> Self {
-        AllKeys([KeyState::default(); 88])
-    }
-}
-
-impl Index<KeyIndex> for AllKeys {
-    type Output = KeyState;
+impl<T> Index<KeyIndex> for [T; NUM_KEYS] {
+    type Output = T;
     fn index(&self, index: KeyIndex) -> &Self::Output {
         let idx: usize = index.into();
-        &self.0[idx]
+        &self[idx]
     }
 }
 
-impl IndexMut<KeyIndex> for AllKeys {
+impl<T> IndexMut<KeyIndex> for [T; NUM_KEYS] {
     fn index_mut(&mut self, index: KeyIndex) -> &mut Self::Output {
         let idx: usize = index.into();
-        &mut self.0[idx]
-    }
-}
-
-impl AllKeys {
-    fn iter(&self) -> Iter<'_, KeyState> {
-        self.0.iter()
-    }
-    fn iter_mut(&mut self) -> IterMut<'_, KeyState> {
-        self.0.iter_mut()
+        &mut self[idx]
     }
 }
 
@@ -224,8 +202,8 @@ struct PwmManager {
     i2c: Lpi2c1,
     tick_timer: Gpt<1>,
     last_tick: u32,
-    current_key_states: AllKeys,
-    next_key_states: AllKeys,
+    key_states: [KeyState; NUM_KEYS],
+    needs_update: [bool; NUM_KEYS],
     _pedal: KeyState,
 }
 
@@ -235,11 +213,20 @@ impl PwmManager {
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
 
-    fn set_key_state(&mut self, idx: KeyIndex, state: KeyState) {
-        self.next_key_states[idx] = state;
+    fn set_key_state(&mut self, idx: KeyIndex, new_state: KeyState) {
+        let current_state = self.key_states[idx];
+        self.key_states[idx] = new_state;
+        self.needs_update[idx] = !current_state.same_duty_cycle(&new_state);
     }
-    fn get_key_state(&self, idx: KeyIndex) -> KeyState {
-        self.current_key_states[idx]
+    fn send_update(&mut self, logger: &mut Logger, idx: KeyIndex) {
+        let key_state = self.key_states[idx];
+        let subcontroller_addr = (<KeyIndex as Into<u8>>::into(idx) / 11) << 1;
+        let local_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
+        let pwm: KeyPwm = (key_state).into();
+        debug!(logger, "UPDATE {idx:?} {pwm:?}");
+        if let Err(e) = self.i2c.write(subcontroller_addr, &[local_idx, pwm.into()]) {
+            warn!(logger, "Failed to update key at {idx:?} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
+        }
     }
     fn tick(&mut self, logger: &mut Logger) {
         let current = self.tick_timer.count();
@@ -253,9 +240,8 @@ impl PwmManager {
             current.saturating_sub(self.last_tick)
         };
         self.last_tick = current;
-        for idx in 0u8..=88 {
-            if let Ok(key_idx) = idx.try_into() {
-                match self.get_key_state(key_idx) {
+        for key_idx in (0..NUM_KEYS).filter_map(|idx| idx.try_into().ok()) {
+            match self.key_states[key_idx] {
                     KeyState::Off => (),
                     KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
                         0 => self.set_key_state(
@@ -287,34 +273,11 @@ impl PwmManager {
                                 pwm,
                             },
                         ),
-                        timeout => {
-                            self.set_key_state(key_idx, KeyState::Repeating { timeout, pwm })
-                        }
+                    timeout => self.set_key_state(key_idx, KeyState::Repeating { timeout, pwm }),
                     },
                 }
-            }
-        }
-        for (idx, (curr, next)) in self
-            .current_key_states
-            .iter_mut()
-            .zip(self.next_key_states.iter())
-            .enumerate()
-        {
-            if !curr.same_state(next) {
-                let key_idx = match idx.try_into() {
-                    Ok(i) => <KeyIndex as Into<u8>>::into(i),
-                    Err(_) => {
-                        warn!(logger, "Failed to update key at index {}", idx);
-                        continue;
-                    }
-                };
-                let subcontroller_addr = (key_idx / 11) << 1;
-                let local_idx = key_idx % 11;
-                let pwm: KeyPwm = (*next).into();
-                if let Err(e) = self.i2c.write(subcontroller_addr, &[local_idx, pwm.into()]) {
-                    warn!(logger, "Failed to update key at index {idx} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
-                }
-                *curr = *next;
+            if self.needs_update[key_idx] {
+                self.send_update(logger, key_idx);
             }
         }
     }
@@ -432,8 +395,8 @@ fn main() -> ! {
 
     let mut pwm_manager = PwmManager {
         i2c,
-        current_key_states: AllKeys::default(),
-        next_key_states: AllKeys::default(),
+        key_states: [KeyState::Off; NUM_KEYS],
+        needs_update: [false; NUM_KEYS],
         tick_timer: gpt1,
         last_tick: 0,
         _pedal: KeyState::default(),
@@ -442,14 +405,9 @@ fn main() -> ! {
     debug!(logger, "Bothoven ready");
 
     loop {
-        if let Ok(len) = serial.write(&logger.logs_to_write) {
-            logger.advance(len);
-        }
-        pwm_manager.tick(&mut logger);
+        device.poll(&mut [&mut midi, &mut serial]);
 
-        if !device.poll(&mut [&mut midi, &mut serial]) {
-            continue;
-        }
+        pwm_manager.tick(&mut logger);
 
         let mut buffer = [0; 64];
 
@@ -470,12 +428,11 @@ fn main() -> ! {
                         }
                         debug!(
                             logger,
-                            "On {note:?} ({}), {velocity:?}",
+                            "MIDI ON {note:?} ({}), {velocity:?}",
                             <Note as Into<u8>>::into(note)
                         );
                         if let Ok(key_idx) = note.try_into() {
-                            let key_state = pwm_manager.get_key_state(key_idx);
-                            debug!(logger, "{key_idx:?} in {key_state:?}");
+                            let key_state = pwm_manager.key_states[key_idx];
                             match key_state {
                                 KeyState::Off => pwm_manager.set_key_state(
                                     key_idx,
@@ -501,10 +458,13 @@ fn main() -> ! {
                         if channel != CHANNEL {
                             continue;
                         }
-                        debug!(logger, "Off {note:?} ({})", <Note as Into<u8>>::into(note));
+                        debug!(
+                            logger,
+                            "MIDI OFF {note:?} ({})",
+                            <Note as Into<u8>>::into(note)
+                        );
                         if let Ok(key_idx) = note.try_into() {
-                            let key_state = pwm_manager.get_key_state(key_idx);
-                            debug!(logger, "{key_idx:?} in {key_state:?}");
+                            let key_state = pwm_manager.key_states[key_idx];
                             match key_state {
                                 KeyState::Pressing { .. }
                                 | KeyState::Holding { .. }
@@ -521,6 +481,10 @@ fn main() -> ! {
                     _ => (),
                 }
             }
+        }
+
+        if let Ok(len) = serial.write(&logger.logs_to_write) {
+            logger.advance(len);
         }
     }
 }

@@ -12,7 +12,7 @@ flash: controller.hex
 	teensy-loader-cli --mcu=TEENSY41 -vsw controller.hex
 
 watch:
-	sudo cat /dev/ttyACM0
+	cat /dev/ttyACM0
 
 clean:
 	cargo clean
