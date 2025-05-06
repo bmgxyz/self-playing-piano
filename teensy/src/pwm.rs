@@ -59,7 +59,7 @@ impl From<KeyState> for KeyPwm {
             KeyState::Off => KeyPwm::OFF,
             KeyState::Pressing { pwm, .. } => pwm,
             KeyState::Holding { .. } => KeyPwm::HOLDING,
-            KeyState::Repeating { pwm, .. } => pwm,
+            KeyState::Repeating { .. } => KeyPwm::OFF,
             KeyState::Releasing { .. } => KeyPwm::OFF,
         }
     }
@@ -98,8 +98,9 @@ impl PwmManager {
     }
     pub(crate) fn set_key_state(&mut self, idx: KeyIndex, new_state: KeyState) {
         let current_state = self.key_states[idx];
+        self.needs_update[idx] =
+            !current_state.same_duty_cycle(&new_state) || self.needs_update[idx];
         self.key_states[idx] = new_state;
-        self.needs_update[idx] = !current_state.same_duty_cycle(&new_state);
     }
     pub(crate) fn off(&mut self, idx: KeyIndex) {
         self.set_key_state(idx, KeyState::Off);
@@ -189,5 +190,6 @@ impl PwmManager {
                 self.send_update(logger, key_idx);
             }
         }
+        self.needs_update = [false; NUM_KEYS];
     }
 }

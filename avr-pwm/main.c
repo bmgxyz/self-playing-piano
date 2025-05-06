@@ -1,5 +1,8 @@
 #include <avr/io.h>
 
+#define F_CPU 16000000UL
+#include <util/delay.h>
+
 extern void pwm(uint8_t *table_b, uint8_t *table_d);
 
 // libc zeros these arrays automatically
@@ -25,8 +28,12 @@ void update_pwm(uint8_t key_idx, uint8_t key_vel) {
 }
 
 int main(void) {
-    DDRB = 0b00111111;
-    DDRD = 0b00011111;
+    // wait for flashing before claiming USART pins
+    _delay_ms(1000);
+    UCSR0B = 0;
+    UCSR0C = 0;
+    DDRB = 0b00111111; // PB0 through PB5
+    DDRD = 0b00011111; // PD0 through PD4
     // I2C address is equal to the low nibble of PINC shifted left by one
     TWAR = (PINC & 0b1111) << 1;
     // configure I2C for slave receiver mode

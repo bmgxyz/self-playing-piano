@@ -91,8 +91,6 @@ fn main() -> ! {
     loop {
         device.poll(&mut [&mut midi, &mut serial]);
 
-        pwm_manager.tick(&mut logger);
-
         let mut buffer = [0; 64];
 
         if let Ok(size) = midi.read(&mut buffer) {
@@ -101,6 +99,8 @@ fn main() -> ! {
                 handle_midi_packet(&mut logger, packet, &mut pwm_manager);
             }
         }
+
+        pwm_manager.tick(&mut logger);
 
         if let Ok(len) = serial.write(&logger.logs_to_write) {
             logger.advance(len);

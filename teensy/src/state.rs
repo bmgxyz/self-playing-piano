@@ -13,6 +13,10 @@ pub(crate) enum KeyState {
     },
     Repeating {
         timeout: u32,
+        /// This is *not* the PWM duty cycle of the repeating state itself.
+        /// Instead, this state carries the desired PWM duty cycle for the
+        /// pressing state that this state will eventually transition to. The
+        /// true duty cycle of this state is zero.
         pwm: KeyPwm,
     },
     Releasing {
