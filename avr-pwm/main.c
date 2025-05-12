@@ -1,7 +1,5 @@
 #include <avr/io.h>
-
-#define F_CPU 16000000UL
-#include <util/delay.h>
+#include <stdbool.h>
 
 extern void pwm(uint8_t *table_b, uint8_t *table_d);
 
@@ -29,7 +27,6 @@ void update_pwm(uint8_t key_idx, uint8_t key_vel) {
 
 int main(void) {
     // wait for flashing before claiming USART pins
-    _delay_ms(1000);
     UCSR0B = 0;
     UCSR0C = 0;
     DDRB = 0b00111111; // PB0 through PB5
@@ -42,31 +39,34 @@ int main(void) {
     enum state s = idle;
     uint8_t key_idx = 0;
     uint8_t key_vel = 0;
+    bool i2c_active = false;
 
     while (1) {
         // poll I2C
         if (TWCR & (1 << TWINT)) {
+            i2c_active = true;
             switch (TWSR & 0xf8) {
                 case 0x60:
                     s = start;
                     break;
                 case 0x80:
+                    uint8_t data = TWDR;
                     if (s == start) {
-                        if (TWDR > 11) {
+                        if (data > 11) {
                             key_idx = 0;
                             s = idle;
                         } else {
-                            key_idx = TWDR;
+                            key_idx = data;
                             s = key;
                         }
                     } else if (s == key) {
-                        if (TWDR > 127) {
+                        if (data > 127) {
                             key_idx = 0;
                             key_vel = 0;
                             s = idle;
                         } else {
                             s = velocity;
-                            key_vel = TWDR;
+                            key_vel = data;
                         }
                     }
                     break;
@@ -74,13 +74,19 @@ int main(void) {
                     if (s == velocity) {
                         update_pwm(key_idx, key_vel);
                     }
+                    PORTB &= ~(1 << PB0);
                     key_idx = 0;
                     key_vel = 0;
                     s = idle;
                     break;
             }
+            if (s == idle) {
+                i2c_active = false;
+            }
             TWCR |= (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
         }
-        pwm(table_b, table_d);
+        if (!i2c_active) {
+            pwm(table_b, table_d);
+        }
     }
 }
