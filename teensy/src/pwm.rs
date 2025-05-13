@@ -141,7 +141,7 @@ impl PwmManager {
     }
     fn send_update(&mut self, logger: &mut Logger, idx: KeyIndex) {
         let key_state = self.key_states[idx];
-        let subcontroller_addr = (<KeyIndex as Into<u8>>::into(idx) / 11) << 1;
+        let subcontroller_addr = <KeyIndex as Into<u8>>::into(idx) / 11;
         let local_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
         let pwm: KeyPwm = (key_state).into();
         debug!(logger, "UPDATE {idx:?} {pwm:?}");
