@@ -67,7 +67,7 @@ class BlackKey:
     off_center = 3.5
 
 
-KeyPlatform.bed_to_top = (
+KeyPlatform.height = (
     BlackKey.bed_to_top_up
     + KeyPlatform.clearance
     + KeyPlatform.thickness
@@ -80,7 +80,8 @@ class PlungerExtension:
     head_thickness = 2
     head_fuzz_thickness = 4
     white_key_stem_length = (
-        KeyPlatform.bed_to_top
+        KeyPlatform.silicone_feet_thickness
+        + KeyPlatform.height
         + Solenoid.height
         - WhiteKey.bed_to_top_down
         - head_fuzz_thickness
@@ -88,7 +89,8 @@ class PlungerExtension:
         - Plunger.height / 2
     )
     black_key_stem_length = (
-        KeyPlatform.bed_to_top
+        KeyPlatform.silicone_feet_thickness
+        + KeyPlatform.height
         + Solenoid.height
         - BlackKey.bed_to_top_down
         - head_fuzz_thickness

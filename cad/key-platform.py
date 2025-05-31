@@ -152,7 +152,7 @@ def make_key_platform(pattern: Iterable[Key]) -> cq.Solid:
     platform = platform.workplane()
     platform = platform.transformed(rotate=cq.Vector(0, 0, -90))
     platform = platform.box(
-        KeyPlatform.bed_to_top,
+        KeyPlatform.height,
         base_width,
         KeyPlatform.base_depth,
         centered=False,
@@ -167,7 +167,7 @@ def make_key_platform(pattern: Iterable[Key]) -> cq.Solid:
     )
     platform = platform.rect(
         base_width * KeyPlatform.window_fraction,
-        KeyPlatform.bed_to_top - PlatformRib.thickness,
+        KeyPlatform.height - PlatformRib.thickness,
         centered=(True, False),
     )
     platform = platform.cutThruAll()
