@@ -1,8 +1,11 @@
 import cadquery as cq
-from common import *
 
-def plunger_extension(stem_length):
-    return (cq.Workplane("XY")
+from common import PlungerExtension, Plunger, export_stl
+
+
+def plunger_extension(stem_length: float) -> cq.Solid:
+    return (
+        cq.Workplane("XY")
         .circle(PlungerExtension.head_diameter / 2)
         .extrude(PlungerExtension.head_thickness)
         .faces(">Z")
@@ -10,6 +13,7 @@ def plunger_extension(stem_length):
         .circle(Plunger.diameter / 2)
         .extrude(stem_length)
     )
+
 
 plunger_extension_white = plunger_extension(PlungerExtension.white_key_stem_length)
 plunger_extension_black = plunger_extension(PlungerExtension.black_key_stem_length)
