@@ -3,7 +3,10 @@ use embedded_hal::i2c::I2c;
 use midi_convert::midi_types::Value7;
 use teensy4_bsp::{
     board::Lpi2c1,
-    hal::gpt::{Gpt, Gpt1},
+    hal::{
+        gpt::{Gpt, Gpt1},
+        lpi2c::ControllerStatus,
+    },
 };
 
 use crate::{debug, state::KeyState, warn, KeyIndex, Logger, NUM_KEYS};
@@ -85,6 +88,7 @@ impl PwmManager {
     const HOLD_TIMEOUT_US: u32 = 30_000_000;
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
+    const NUM_I2C_ATTEMPTS: u8 = 5;
 
     pub(crate) fn new(i2c: Lpi2c1, gpt1: Gpt1) -> Self {
         PwmManager {
@@ -142,11 +146,31 @@ impl PwmManager {
     fn send_update(&mut self, logger: &mut Logger, idx: KeyIndex) {
         let key_state = self.key_states[idx];
         let subcontroller_addr = <KeyIndex as Into<u8>>::into(idx) / 11;
-        let local_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
-        let pwm: KeyPwm = (key_state).into();
+        let key_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
+        let pwm: KeyPwm = key_state.into();
+        let key_vel: u8 = pwm.into();
+        let mut msg: u16 = ((key_idx as u16) << 12) + ((key_vel as u16) << 5) + 1;
+        let checksum = msg.count_zeros() - 4;
+        msg += (checksum as u16) << 1;
+        let bytes = msg.to_be_bytes();
         debug!(logger, "UPDATE {idx:?} {pwm:?}");
-        if let Err(e) = self.i2c.write(subcontroller_addr, &[local_idx, pwm.into()]) {
-            warn!(logger, "Failed to update key at {idx:?} ({subcontroller_addr}, {local_idx}) due to I2C error: {e:?}",);
+        let mut attempts = 0;
+        while attempts < Self::NUM_I2C_ATTEMPTS {
+            match self
+                .i2c
+                .write(subcontroller_addr, &[bytes[0], bytes[1], 0x00])
+            {
+                Ok(_) => return,
+                Err(i2c_status) => {
+                    attempts += 1;
+                    warn!(logger, "Failed to update key at {idx:?} ({subcontroller_addr}, {key_idx}) due to I2C error: {i2c_status:?}",);
+                    if i2c_status.intersects(ControllerStatus::ARBITRATION_LOST) {
+                        // Clock desync may have caused the subcontroller to get stuck holding the bus.
+                        // We can try to reset the subcontroller's FSM by sending several clock cycles.
+                        let _ = self.i2c.write(subcontroller_addr, &[0x00, 0x00, 0x00]);
+                    }
+                }
+            }
         }
     }
     pub(crate) fn tick(&mut self, logger: &mut Logger) {

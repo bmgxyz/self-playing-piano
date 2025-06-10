@@ -8,4 +8,4 @@ fuse:
 	avrdude -c arduino -P /dev/ttyUSB0 -b 19200 -p m328p -U lfuse:w:0xFF:m -U hfuse:w:0xDE:m -U efuse:w:0xFD:m
 
 clean:
-	rm avr-pwm
+	rm -f avr-pwm
