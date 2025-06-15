@@ -1,15 +1,17 @@
 use core::fmt::Write;
-use embedded_hal::i2c::I2c;
+use embedded_hal::{digital::OutputPin, i2c::I2c};
 use midi_convert::midi_types::Value7;
 use teensy4_bsp::{
     board::Lpi2c1,
     hal::{
-        gpt::{Gpt, Gpt1},
-        lpi2c::ControllerStatus,
+        gpio::Output,
+        gpt::{ClockSource, Gpt1, Gpt2, Mode},
+        timer::Blocking,
     },
+    pins::tmm::P17,
 };
 
-use crate::{debug, state::KeyState, warn, KeyIndex, Logger, NUM_KEYS};
+use crate::{debug, state::KeyState, trace, warn, KeyIndex, Logger, NUM_KEYS};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) struct KeyPwm(u8);
@@ -76,7 +78,9 @@ impl From<KeyPwm> for u8 {
 
 pub(crate) struct PwmManager {
     i2c: Lpi2c1,
-    tick_timer: Gpt<1>,
+    control: Output<P17>,
+    tick_timer: Gpt1,
+    control_timer: Blocking<Gpt2, 500_000>,
     last_tick: u32,
     pub(crate) key_states: [KeyState; NUM_KEYS],
     needs_update: [bool; NUM_KEYS],
@@ -88,17 +92,33 @@ impl PwmManager {
     const HOLD_TIMEOUT_US: u32 = 30_000_000;
     const RELEASE_TIMEOUT_US: u32 = 100_000;
     const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
-    const NUM_I2C_ATTEMPTS: u8 = 5;
 
-    pub(crate) fn new(i2c: Lpi2c1, gpt1: Gpt1) -> Self {
-        PwmManager {
+    const I2C_NUM_ATTEMPTS: u8 = 5;
+    const I2C_ADDR_PREFIX: u8 = 0x50;
+    const PWM_STOP_DELAY_US: u32 = 55;
+
+    pub(crate) fn new(i2c: Lpi2c1, mut gpt1: Gpt1, mut gpt2: Gpt2, control: Output<P17>) -> Self {
+        gpt1.set_clock_source(ClockSource::PeripheralClock);
+        gpt1.set_mode(Mode::FreeRunning);
+        gpt1.set_divider(1);
+        gpt1.enable();
+        gpt2.set_clock_source(ClockSource::PeripheralClock);
+        gpt2.set_mode(Mode::FreeRunning);
+        gpt2.set_divider(1);
+        gpt2.enable();
+        let control_timer = Blocking::from_gpt(gpt2);
+        let mut pwm_manager = PwmManager {
             i2c,
+            control,
             key_states: [KeyState::Off; NUM_KEYS],
             needs_update: [false; NUM_KEYS],
             tick_timer: gpt1,
+            control_timer,
             last_tick: 0,
             _pedal: KeyState::default(),
-        }
+        };
+        let _ = pwm_manager.control.set_high();
+        pwm_manager
     }
     pub(crate) fn set_key_state(&mut self, idx: KeyIndex, new_state: KeyState) {
         let current_state = self.key_states[idx];
@@ -145,30 +165,28 @@ impl PwmManager {
     }
     fn send_update(&mut self, logger: &mut Logger, idx: KeyIndex) {
         let key_state = self.key_states[idx];
-        let subcontroller_addr = <KeyIndex as Into<u8>>::into(idx) / 11;
+        let subcontroller_addr = Self::I2C_ADDR_PREFIX | (<KeyIndex as Into<u8>>::into(idx) / 11);
         let key_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
         let pwm: KeyPwm = key_state.into();
         let key_vel: u8 = pwm.into();
-        let mut msg: u16 = ((key_idx as u16) << 12) + ((key_vel as u16) << 5) + 1;
-        let checksum = msg.count_zeros() - 4;
-        msg += (checksum as u16) << 1;
+        let mut msg: u16 = ((key_idx as u16) << 12) + ((key_vel as u16) << 5);
+        let checksum = (1 << (6 - (msg.count_ones() % 6))) - 1;
+        msg += checksum as u16;
         let bytes = msg.to_be_bytes();
         debug!(logger, "UPDATE {idx:?} {pwm:?}");
         let mut attempts = 0;
-        while attempts < Self::NUM_I2C_ATTEMPTS {
+        while attempts < Self::I2C_NUM_ATTEMPTS {
             match self
                 .i2c
                 .write(subcontroller_addr, &[bytes[0], bytes[1], 0x00])
             {
-                Ok(_) => return,
+                Ok(_) => {
+                    trace!(logger, "success");
+                    return;
+                }
                 Err(i2c_status) => {
                     attempts += 1;
-                    warn!(logger, "Failed to update key at {idx:?} ({subcontroller_addr}, {key_idx}) due to I2C error: {i2c_status:?}",);
-                    if i2c_status.intersects(ControllerStatus::ARBITRATION_LOST) {
-                        // Clock desync may have caused the subcontroller to get stuck holding the bus.
-                        // We can try to reset the subcontroller's FSM by sending several clock cycles.
-                        let _ = self.i2c.write(subcontroller_addr, &[0x00, 0x00, 0x00]);
-                    }
+                    warn!(logger, "attempt {attempts}: failed to update key at {idx:?} ({}, {key_idx}) due to I2C error: {i2c_status:?}", subcontroller_addr % 11);
                 }
             }
         }
@@ -184,6 +202,7 @@ impl PwmManager {
         } else {
             current.saturating_sub(self.last_tick)
         };
+        // Decrement timeouts and advance key states as needed
         self.last_tick = current;
         for key_idx in (0..NUM_KEYS).filter_map(|idx| idx.try_into().ok()) {
             match self.key_states[key_idx] {
@@ -210,10 +229,23 @@ impl PwmManager {
                     timeout => self.set_key_state(key_idx, KeyState::Repeating { timeout, pwm }),
                 },
             }
+        }
+        // If any keys need updates...
+        if self.needs_update.iter().any(|n| *n) {
+            // ...then tell all subcontrollers to stop running PWM to reduce EMI
+            let _ = self.control.set_low();
+            self.control_timer.block_us(Self::PWM_STOP_DELAY_US);
+        } else {
+            return;
+        }
+        // Send all pending updates
+        for key_idx in (0..NUM_KEYS).filter_map(|idx| idx.try_into().ok()) {
             if self.needs_update[key_idx] {
                 self.send_update(logger, key_idx);
             }
         }
+        // Now that we're done sending updates, re-enable subcontroller PWM
+        let _ = self.control.set_high();
         self.needs_update = [false; NUM_KEYS];
     }
 }

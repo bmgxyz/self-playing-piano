@@ -2,8 +2,8 @@
 #include <avr/interrupt.h>
 #include <stdbool.h>
 
-#define TWI_ACK_NEXT  { TWCR |= (1 << TWINT) | (1 << TWEN) | (1 << TWEA) | (1 << TWIE); }
-#define TWI_NACK_NEXT { TWCR |= (1 << TWINT) | (1 << TWEN) | (1 << TWIE); TWCR &= ~(1 << TWEA); }
+#define TWI_ACK_NEXT  { TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA) | (1 << TWIE); }
+#define TWI_NACK_NEXT { TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWIE); }
 
 extern void pwm(uint8_t *table_b, uint8_t *table_d);
 
@@ -15,11 +15,12 @@ enum state {
     idle, first, second, third
 };
 
-static enum state s = idle;
-static uint16_t message = 0;
-static uint8_t key_idx = 0;
-static uint8_t key_vel = 0;
-static uint8_t checksum = 0;
+static volatile enum state s = idle;
+static volatile uint16_t message = 0;
+static volatile uint8_t key_idx = 0;
+static volatile uint8_t key_vel = 0;
+
+const uint8_t TWI_ADDR_PREFIX = 0x50;
 
 void update_pwm(uint8_t key_idx, uint8_t key_vel) {
     uint8_t table_idx = key_idx < 6 ? key_idx : key_idx - 6;
@@ -35,14 +36,8 @@ void update_pwm(uint8_t key_idx, uint8_t key_vel) {
     }
 }
 
-uint8_t inverse_popcount(uint16_t message, uint8_t n) {
-    uint8_t ret = 0;
-    for (int i = 0; i < n; i++) {
-        if ((message >> i) % 2 == 0) {
-            ret += 1;
-        }
-    }
-    return ret;
+bool valid_checksum(uint16_t message) {
+    return __builtin_popcount(message) % 6 == 0;
 }
 
 ISR(TWI_vect) {
@@ -53,12 +48,10 @@ ISR(TWI_vect) {
             message = 0;
             key_idx = 0;
             key_vel = 0;
-            checksum = 0;
             s = first;
             TWI_ACK_NEXT
             break;
-        // "Previously addressed with own SLA+W; data has been received;
-        // ACK has been returned"
+        // "Previously addressed with own SLA+W; data has been received; ACK has been returned"
         case 0x80:
             switch (s) {
                 case first:
@@ -67,13 +60,11 @@ ISR(TWI_vect) {
                     TWI_ACK_NEXT
                     break;
                 case second:
-                    message += ((uint16_t)TWDR);
+                    message |= ((uint16_t)TWDR);
                     s = third;
                     key_idx = (uint8_t)(message >> 12);
                     key_vel = (uint8_t)((message >> 5) % (1 << 7));
-                    checksum = (uint8_t)((message >> 1) % (1 << 4));
-                    if (message % 2 == 1 && key_idx < 11
-                        && inverse_popcount(message >> 5, 11) == checksum) {
+                    if (key_idx < 11 && valid_checksum(message)) {
                         update_pwm(key_idx, key_vel);
                         TWI_ACK_NEXT
                     } else {
@@ -90,7 +81,6 @@ ISR(TWI_vect) {
             message = 0;
             key_idx = 0;
             key_vel = 0;
-            checksum = 0;
             s = idle;
             TWI_ACK_NEXT
             break;
@@ -98,25 +88,25 @@ ISR(TWI_vect) {
 }
 
 int main(void) {
-    // wait for flashing before claiming USART pins
-    UCSR0B = 0;
-    UCSR0C = 0;
-    update_pwm(0, 32);
-
     DDRB = 0b00111111; // PB0 through PB5
-    DDRD = 0b00011111; // PD0 through PD4
+    DDRD = 0b00111111; // PD0 through PD4, plus PD5 for status LED
 
-    // I2C address is equal to the low nibble of PINC
-    // shifted left by one to avoid the TWGCE bit in TWAR
-    TWAR = (PINC & 0b1111) << 1;
+    // I2C address is equal to the prefix together with the low nibble of PINC
+    // shifted left by one to avoid TWGCE in TWAR
+    TWAR = (TWI_ADDR_PREFIX | (PINC & 0b111)) << 1;
+
+    // configure I2C for slave receiver mode with interrupts
+    TWCR = (1 << TWEA) | (1 << TWEN) | (1 << TWIE);
+    TWI_ACK_NEXT
 
     // enable global interrupts
     sei();
 
-    // configure I2C for slave receiver mode with interrupts
-    TWCR = (1 << TWEA) | (1 << TWEN) | (1 << TWIE);
-
     while (1) {
-        pwm(table_b, table_d);
+        if (PINC & (1 << PC3)) {
+            PORTD |= 1 << PD5;
+            pwm(table_b, table_d);
+            PORTD &= ~(1 << PD5);
+        }
     }
 }

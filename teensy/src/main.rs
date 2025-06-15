@@ -15,10 +15,7 @@ use teensy4_bsp::{
 };
 use teensy4_panic as _;
 
-use bsp::{
-    board,
-    hal::gpt::{ClockSource, Mode},
-};
+use bsp::board;
 use core::fmt::Write;
 use pwm::{KeyPwm, PwmManager};
 use usb_device::{
@@ -45,7 +42,9 @@ fn main() -> ! {
     let instances = board::instances();
     let board::Resources {
         mut ccm,
-        mut gpt1,
+        gpt1,
+        gpt2,
+        mut gpio1,
         lpi2c1,
         pins,
         usb,
@@ -59,10 +58,7 @@ fn main() -> ! {
 
     let i2c: Lpi2c1 = board::lpi2c(lpi2c1, pins.p19, pins.p18, board::Lpi2cClockSpeed::KHz100);
 
-    gpt1.set_clock_source(ClockSource::PeripheralClock);
-    gpt1.set_mode(Mode::FreeRunning);
-    gpt1.set_divider(1);
-    gpt1.enable();
+    let control = gpio1.output(pins.p17);
 
     clock_gate::usb().set(&mut ccm, clock_gate::ON);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
@@ -84,7 +80,7 @@ fn main() -> ! {
     }
     device.bus().configure();
 
-    let mut pwm_manager = PwmManager::new(i2c, gpt1);
+    let mut pwm_manager = PwmManager::new(i2c, gpt1, gpt2, control);
 
     debug!(logger, "Bothoven ready");
 
