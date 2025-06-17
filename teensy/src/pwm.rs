@@ -95,6 +95,7 @@ impl PwmManager {
 
     const I2C_NUM_ATTEMPTS: u8 = 5;
     const I2C_ADDR_PREFIX: u8 = 0x50;
+    const I2C_CHECKSUM_LOOKUP: [u16; 17] = [0, 5, 4, 3, 2, 1, 0, 5, 4, 3, 2, 1, 0, 5, 4, 3, 2];
     const PWM_STOP_DELAY_US: u32 = 55;
 
     pub(crate) fn new(i2c: Lpi2c1, mut gpt1: Gpt1, mut gpt2: Gpt2, control: Output<P17>) -> Self {
@@ -169,9 +170,9 @@ impl PwmManager {
         let key_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
         let pwm: KeyPwm = key_state.into();
         let key_vel: u8 = pwm.into();
-        let mut msg: u16 = ((key_idx as u16) << 12) + ((key_vel as u16) << 5);
-        let checksum = (1 << (6 - (msg.count_ones() % 6))) - 1;
-        msg += checksum as u16;
+        let mut msg: u16 = ((key_idx as u16) << 12) | ((key_vel as u16) << 5);
+        let checksum = (1 << Self::I2C_CHECKSUM_LOOKUP[msg.count_ones() as usize]) - 1;
+        msg |= checksum as u16;
         let bytes = msg.to_be_bytes();
         debug!(logger, "UPDATE {idx:?} {pwm:?}");
         let mut attempts = 0;
@@ -186,7 +187,7 @@ impl PwmManager {
                 }
                 Err(i2c_status) => {
                     attempts += 1;
-                    warn!(logger, "attempt {attempts}: failed to update key at {idx:?} ({}, {key_idx}) due to I2C error: {i2c_status:?}", subcontroller_addr % 11);
+                    warn!(logger, "attempt {attempts}: failed to update key at {idx:?} ({}, {key_idx}) due to I2C error: {i2c_status:?}", <KeyIndex as Into<u8>>::into(idx) / 11);
                 }
             }
         }
