@@ -7,9 +7,8 @@ use midi::handle_midi_packet;
 use state::KeyState;
 use teensy4_bsp::{
     self as bsp,
-    board::Lpi2c1,
     hal::{
-        ccm::{clock_gate, lpi2c_clk},
+        ccm::clock_gate,
         usbd::{BusAdapter, EndpointMemory, EndpointState, Speed},
     },
 };
@@ -17,7 +16,7 @@ use teensy4_panic as _;
 
 use bsp::board;
 use core::fmt::Write;
-use pwm::{KeyPwm, PwmManager};
+use pwm::PwmManager;
 use usb_device::{
     class_prelude::*,
     device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid},
@@ -43,22 +42,11 @@ fn main() -> ! {
     let board::Resources {
         mut ccm,
         gpt1,
-        gpt2,
-        mut gpio1,
-        lpi2c1,
+        gpio1,
         pins,
         usb,
         ..
     } = board::t41(instances);
-
-    clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::OFF);
-    lpi2c_clk::set_selection(&mut ccm, lpi2c_clk::Selection::Oscillator);
-    lpi2c_clk::set_divider(&mut ccm, lpi2c_clk::MIN_DIVIDER);
-    clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::ON);
-
-    let i2c: Lpi2c1 = board::lpi2c(lpi2c1, pins.p19, pins.p18, board::Lpi2cClockSpeed::KHz100);
-
-    let control = gpio1.output(pins.p17);
 
     clock_gate::usb().set(&mut ccm, clock_gate::ON);
     let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
@@ -80,7 +68,7 @@ fn main() -> ! {
     }
     device.bus().configure();
 
-    let mut pwm_manager = PwmManager::new(i2c, gpt1, gpt2, control);
+    let mut pwm_manager = PwmManager::new(gpio1, pins, gpt1);
 
     debug!(logger, "Bothoven ready");
 

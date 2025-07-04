@@ -1,158 +1,127 @@
 use core::fmt::Write;
-use embedded_hal::{digital::OutputPin, i2c::I2c};
-use midi_convert::midi_types::Value7;
+use cortex_m::asm::delay;
+use fugit::MicrosDurationU32;
 use teensy4_bsp::{
-    board::Lpi2c1,
     hal::{
-        gpio::Output,
-        gpt::{ClockSource, Gpt1, Gpt2, Mode},
-        timer::Blocking,
+        gpio::{Output, Port},
+        gpt::{ClockSource, Gpt1, Mode},
     },
-    pins::tmm::P17,
+    pins::{
+        t41::Pins,
+        tmm::{P17, P18, P19, P20, P21, P22},
+    },
 };
 
-use crate::{debug, state::KeyState, trace, warn, KeyIndex, Logger, NUM_KEYS};
+use crate::{state::KeyState, trace, KeyIndex, Logger, NUM_KEYS};
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub(crate) struct KeyPwm(u8);
-
-impl KeyPwm {
-    const MAX_PWM: u8 = 72;
-    const MIN_PWM: u8 = 26;
-    const OFF: KeyPwm = KeyPwm(0);
-    const HOLDING: KeyPwm = KeyPwm(18);
-
-    fn map_velocity_to_pwm(velocity: u8) -> u8 {
-        ((velocity as u16) * ((Self::MAX_PWM - Self::MIN_PWM) as u16) / (127u16)) as u8
-            + Self::MIN_PWM
-    }
-}
-
-pub(crate) struct InvalidKeyPwm;
-
-impl TryFrom<u8> for KeyPwm {
-    type Error = InvalidKeyPwm;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(KeyPwm::OFF),
-            v if v > 127 => Err(InvalidKeyPwm),
-            v => {
-                let pwm = KeyPwm::map_velocity_to_pwm(v);
-                Ok(KeyPwm(pwm))
-            }
-        }
-    }
-}
-
-impl From<Value7> for KeyPwm {
-    fn from(value: Value7) -> Self {
-        let velocity: u8 = value.into();
-        match velocity {
-            0 => KeyPwm::OFF,
-            v => {
-                let pwm = KeyPwm::map_velocity_to_pwm(v);
-                KeyPwm(pwm)
-            }
-        }
-    }
-}
-
-impl From<KeyState> for KeyPwm {
-    fn from(value: KeyState) -> Self {
-        match value {
-            KeyState::Off => KeyPwm::OFF,
-            KeyState::Pressing { pwm, .. } => pwm,
-            KeyState::Holding { .. } => KeyPwm::HOLDING,
-            KeyState::Repeating { .. } => KeyPwm::OFF,
-            KeyState::Releasing { .. } => KeyPwm::OFF,
-        }
-    }
-}
-
-impl From<KeyPwm> for u8 {
-    fn from(value: KeyPwm) -> Self {
-        value.0
-    }
-}
+type KeyPressDuration = MicrosDurationU32;
 
 pub(crate) struct PwmManager {
-    i2c: Lpi2c1,
-    control: Output<P17>,
+    data_clock: Output<P17>,
+    clear_al: Output<P18>,
+    latch: Output<P19>,
+    enable_al: Output<P20>,
+    kick: Output<P21>,
+    hold: Output<P22>,
     tick_timer: Gpt1,
-    control_timer: Blocking<Gpt2, 500_000>,
     last_tick: u32,
     pub(crate) key_states: [KeyState; NUM_KEYS],
-    needs_update: [bool; NUM_KEYS],
+    need_update: bool,
     _pedal: KeyState,
 }
 
 impl PwmManager {
-    const PRESS_TIMEOUT_US: u32 = 100_000;
-    const HOLD_TIMEOUT_US: u32 = 30_000_000;
-    const RELEASE_TIMEOUT_US: u32 = 100_000;
-    const REPEAT_TIMEOUT_US: u32 = Self::RELEASE_TIMEOUT_US;
+    const HOLD_TIMEOUT: MicrosDurationU32 = MicrosDurationU32::micros(30_000_000);
+    const RELEASE_TIMEOUT: MicrosDurationU32 = MicrosDurationU32::micros(100_000);
+    const REPEAT_TIMEOUT: MicrosDurationU32 = Self::RELEASE_TIMEOUT;
 
-    const I2C_NUM_ATTEMPTS: u8 = 5;
-    const I2C_ADDR_PREFIX: u8 = 0x50;
-    const I2C_CHECKSUM_LOOKUP: [u16; 17] = [0, 5, 4, 3, 2, 1, 0, 5, 4, 3, 2, 1, 0, 5, 4, 3, 2];
-    const PWM_STOP_DELAY_US: u32 = 55;
+    const SERIAL_DELAY_CYCLES: u32 = 512;
 
-    pub(crate) fn new(i2c: Lpi2c1, mut gpt1: Gpt1, mut gpt2: Gpt2, control: Output<P17>) -> Self {
+    pub(crate) fn new(mut gpio1: Port<1>, pins: Pins, mut gpt1: Gpt1) -> Self {
         gpt1.set_clock_source(ClockSource::PeripheralClock);
         gpt1.set_mode(Mode::FreeRunning);
         gpt1.set_divider(1);
         gpt1.enable();
-        gpt2.set_clock_source(ClockSource::PeripheralClock);
-        gpt2.set_mode(Mode::FreeRunning);
-        gpt2.set_divider(1);
-        gpt2.enable();
-        let control_timer = Blocking::from_gpt(gpt2);
+
+        // let serial_timer = Blocking::from_gpt(gpt2);
+
+        let data_clock = gpio1.output(pins.p17);
+        let clear_al = gpio1.output(pins.p18);
+        let latch = gpio1.output(pins.p19);
+        let enable_al = gpio1.output(pins.p20);
+        let kick = gpio1.output(pins.p21);
+        let hold = gpio1.output(pins.p22);
+        let _pwm = (); // TODO
+
         let mut pwm_manager = PwmManager {
-            i2c,
-            control,
+            data_clock,
+            clear_al,
+            latch,
+            enable_al,
+            kick,
+            hold,
             key_states: [KeyState::Off; NUM_KEYS],
-            needs_update: [false; NUM_KEYS],
+            need_update: false,
             tick_timer: gpt1,
-            control_timer,
             last_tick: 0,
             _pedal: KeyState::default(),
         };
-        let _ = pwm_manager.control.set_high();
+
+        pwm_manager.reset();
         pwm_manager
+    }
+    fn wait_clock(&mut self) {
+        delay(Self::SERIAL_DELAY_CYCLES);
+    }
+    fn sr_clock(&mut self) {
+        if self.data_clock.is_set() {
+            self.data_clock.clear();
+        }
+        self.wait_clock();
+        self.data_clock.set();
+        self.wait_clock();
+        self.data_clock.clear();
+    }
+    fn reset(&mut self) {
+        self.data_clock.clear();
+        self.latch.clear();
+        self.kick.clear();
+        self.hold.clear();
+
+        self.enable_al.set();
+        self.clear_al.set();
+        self.sr_clock();
+        self.clear_al.clear();
+        self.sr_clock();
+        self.clear_al.set();
+        self.enable_al.clear();
+        self.sr_clock();
     }
     pub(crate) fn set_key_state(&mut self, idx: KeyIndex, new_state: KeyState) {
         let current_state = self.key_states[idx];
-        self.needs_update[idx] =
-            !current_state.same_duty_cycle(&new_state) || self.needs_update[idx];
+        self.need_update |= current_state.needs_update(&new_state);
         self.key_states[idx] = new_state;
     }
     pub(crate) fn off(&mut self, idx: KeyIndex) {
         self.set_key_state(idx, KeyState::Off);
     }
-    pub(crate) fn press(&mut self, idx: KeyIndex, pwm: KeyPwm) {
-        self.set_key_state(
-            idx,
-            KeyState::Pressing {
-                timeout: Self::PRESS_TIMEOUT_US,
-                pwm,
-            },
-        );
+    pub(crate) fn press(&mut self, idx: KeyIndex, timeout: KeyPressDuration) {
+        self.set_key_state(idx, KeyState::Pressing { timeout });
     }
     pub(crate) fn hold(&mut self, idx: KeyIndex) {
         self.set_key_state(
             idx,
             KeyState::Holding {
-                timeout: Self::HOLD_TIMEOUT_US,
+                timeout: Self::HOLD_TIMEOUT,
             },
         );
     }
-    pub(crate) fn repeat(&mut self, idx: KeyIndex, pwm: KeyPwm) {
+    pub(crate) fn repeat(&mut self, idx: KeyIndex, pressing_timeout: KeyPressDuration) {
         self.set_key_state(
             idx,
             KeyState::Repeating {
-                timeout: Self::REPEAT_TIMEOUT_US,
-                pwm,
+                timeout: Self::REPEAT_TIMEOUT,
+                pressing_timeout,
             },
         );
     }
@@ -160,93 +129,112 @@ impl PwmManager {
         self.set_key_state(
             idx,
             KeyState::Releasing {
-                timeout: Self::RELEASE_TIMEOUT_US,
+                timeout: Self::RELEASE_TIMEOUT,
             },
         );
     }
-    fn send_update(&mut self, logger: &mut Logger, idx: KeyIndex) {
-        let key_state = self.key_states[idx];
-        let subcontroller_addr = Self::I2C_ADDR_PREFIX | (<KeyIndex as Into<u8>>::into(idx) / 11);
-        let key_idx = <KeyIndex as Into<u8>>::into(idx) % 11;
-        let pwm: KeyPwm = key_state.into();
-        let key_vel: u8 = pwm.into();
-        let mut msg: u16 = ((key_idx as u16) << 12) | ((key_vel as u16) << 5);
-        let checksum = (1 << Self::I2C_CHECKSUM_LOOKUP[msg.count_ones() as usize]) - 1;
-        msg |= checksum as u16;
-        let bytes = msg.to_be_bytes();
-        debug!(logger, "UPDATE {idx:?} {pwm:?}");
-        let mut attempts = 0;
-        while attempts < Self::I2C_NUM_ATTEMPTS {
-            match self
-                .i2c
-                .write(subcontroller_addr, &[bytes[0], bytes[1], 0x00])
-            {
-                Ok(_) => {
-                    trace!(logger, "success");
-                    return;
+    fn send_update(&mut self, logger: &mut Logger) {
+        for (idx, key) in self.key_states.into_iter().rev().enumerate() {
+            match key {
+                KeyState::Pressing { .. } => {
+                    trace!(logger, "pressing {idx}");
+                    self.kick.set();
+                    self.hold.clear();
+                    self.sr_clock();
                 }
-                Err(i2c_status) => {
-                    attempts += 1;
-                    warn!(logger, "attempt {attempts}: failed to update key at {idx:?} ({}, {key_idx}) due to I2C error: {i2c_status:?}", <KeyIndex as Into<u8>>::into(idx) / 11);
+                KeyState::Holding { .. } => {
+                    trace!(logger, "holding {idx}");
+                    self.kick.clear();
+                    self.hold.set();
+                    self.sr_clock();
+                }
+                KeyState::Off | KeyState::Repeating { .. } | KeyState::Releasing { .. } => {
+                    self.kick.clear();
+                    self.hold.clear();
+                    self.sr_clock();
                 }
             }
         }
+        self.kick.clear();
+        self.hold.clear();
+
+        self.latch.set();
+        self.wait_clock();
+        self.latch.clear();
+        self.wait_clock();
     }
     pub(crate) fn tick(&mut self, logger: &mut Logger) {
-        let current = self.tick_timer.count();
-        let elapsed = if self.tick_timer.is_rollover() {
+        let current_us = self.tick_timer.count();
+        let elapsed_us = if self.tick_timer.is_rollover() {
             self.tick_timer.clear_rollover();
             self.tick_timer.reset();
             u32::MAX
                 .saturating_sub(self.last_tick)
-                .saturating_add(current)
+                .saturating_add(current_us)
         } else {
-            current.saturating_sub(self.last_tick)
+            current_us.saturating_sub(self.last_tick)
         };
         // Decrement timeouts and advance key states as needed
-        self.last_tick = current;
+        self.last_tick = current_us;
         for key_idx in (0..NUM_KEYS).filter_map(|idx| idx.try_into().ok()) {
             match self.key_states[key_idx] {
                 KeyState::Off => (),
-                KeyState::Pressing { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                    0 => self.hold(key_idx),
-                    timeout => self.set_key_state(key_idx, KeyState::Pressing { timeout, pwm }),
-                },
-                KeyState::Holding { timeout } => match timeout.saturating_sub(elapsed) {
-                    0 => self.set_key_state(
+                KeyState::Pressing { timeout } => {
+                    match timeout.to_micros().saturating_sub(elapsed_us) {
+                        0 => self.hold(key_idx),
+                        timeout => self.set_key_state(
+                            key_idx,
+                            KeyState::Pressing {
+                                timeout: MicrosDurationU32::micros(timeout),
+                            },
+                        ),
+                    }
+                }
+                KeyState::Holding { timeout } => {
+                    match timeout.to_micros().saturating_sub(elapsed_us) {
+                        0 => self.set_key_state(
+                            key_idx,
+                            KeyState::Releasing {
+                                timeout: Self::RELEASE_TIMEOUT,
+                            },
+                        ),
+                        timeout => self.set_key_state(
+                            key_idx,
+                            KeyState::Holding {
+                                timeout: MicrosDurationU32::micros(timeout),
+                            },
+                        ),
+                    }
+                }
+                KeyState::Releasing { timeout } => {
+                    match timeout.to_micros().saturating_sub(elapsed_us) {
+                        0 => self.off(key_idx),
+                        timeout => self.set_key_state(
+                            key_idx,
+                            KeyState::Releasing {
+                                timeout: MicrosDurationU32::micros(timeout),
+                            },
+                        ),
+                    }
+                }
+                KeyState::Repeating {
+                    timeout,
+                    pressing_timeout,
+                } => match timeout.to_micros().saturating_sub(elapsed_us) {
+                    0 => self.press(key_idx, pressing_timeout),
+                    timeout => self.set_key_state(
                         key_idx,
-                        KeyState::Releasing {
-                            timeout: Self::RELEASE_TIMEOUT_US,
+                        KeyState::Repeating {
+                            timeout: MicrosDurationU32::micros(timeout),
+                            pressing_timeout,
                         },
                     ),
-                    timeout => self.set_key_state(key_idx, KeyState::Holding { timeout }),
-                },
-                KeyState::Releasing { timeout } => match timeout.saturating_sub(elapsed) {
-                    0 => self.off(key_idx),
-                    timeout => self.set_key_state(key_idx, KeyState::Releasing { timeout }),
-                },
-                KeyState::Repeating { timeout, pwm } => match timeout.saturating_sub(elapsed) {
-                    0 => self.press(key_idx, pwm),
-                    timeout => self.set_key_state(key_idx, KeyState::Repeating { timeout, pwm }),
                 },
             }
         }
-        // If any keys need updates...
-        if self.needs_update.iter().any(|n| *n) {
-            // ...then tell all subcontrollers to stop running PWM to reduce EMI
-            let _ = self.control.set_low();
-            self.control_timer.block_us(Self::PWM_STOP_DELAY_US);
-        } else {
-            return;
+        if self.need_update {
+            self.send_update(logger);
+            self.need_update = false;
         }
-        // Send all pending updates
-        for key_idx in (0..NUM_KEYS).filter_map(|idx| idx.try_into().ok()) {
-            if self.needs_update[key_idx] {
-                self.send_update(logger, key_idx);
-            }
-        }
-        // Now that we're done sending updates, re-enable subcontroller PWM
-        let _ = self.control.set_high();
-        self.needs_update = [false; NUM_KEYS];
     }
 }
