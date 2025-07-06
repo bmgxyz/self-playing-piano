@@ -45,6 +45,7 @@ fn main() -> ! {
         gpio1,
         pins,
         usb,
+        flexpwm4,
         ..
     } = board::t41(instances);
 
@@ -68,7 +69,7 @@ fn main() -> ! {
     }
     device.bus().configure();
 
-    let mut pwm_manager = PwmManager::new(gpio1, pins, gpt1);
+    let mut pwm_manager = PwmManager::new(gpio1, pins, gpt1, flexpwm4);
 
     debug!(logger, "Bothoven ready");
 

@@ -1,32 +1,38 @@
-use core::fmt::Write;
 use cortex_m::asm::delay;
+use embedded_hal::digital::OutputPin;
 use fugit::MicrosDurationU32;
 use teensy4_bsp::{
+    board::IPG_FREQUENCY,
     hal::{
-        gpio::{Output, Port},
+        flexpwm::{
+            self, ClockSelect, LoadMode, Output as PwmOutput, PairOperation, Prescaler, Pwm,
+            Submodules,
+        },
+        gpio::{Output as GpioOutput, Port},
         gpt::{ClockSource, Gpt1, Mode},
     },
     pins::{
         t41::Pins,
-        tmm::{P17, P18, P19, P20, P21, P22},
+        tmm::{P17, P18, P19, P20, P21, P22, P23},
     },
 };
 
-use crate::{state::KeyState, trace, KeyIndex, Logger, NUM_KEYS};
+use crate::{state::KeyState, KeyIndex, Logger, NUM_KEYS};
 
 type KeyPressDuration = MicrosDurationU32;
 
 pub(crate) struct PwmManager {
-    data_clock: Output<P17>,
-    clear_al: Output<P18>,
-    latch: Output<P19>,
-    enable_al: Output<P20>,
-    kick: Output<P21>,
-    hold: Output<P22>,
+    data_clock: GpioOutput<P17>,
+    clear_al: GpioOutput<P18>,
+    latch: GpioOutput<P19>,
+    enable_al: GpioOutput<P20>,
+    kick: GpioOutput<P21>,
+    hold_enable: GpioOutput<P22>,
+    _hold_pwm: PwmOutput<P23>,
     tick_timer: Gpt1,
     last_tick: u32,
     pub(crate) key_states: [KeyState; NUM_KEYS],
-    need_update: bool,
+    needs_update: bool,
     _pedal: KeyState,
 }
 
@@ -37,21 +43,50 @@ impl PwmManager {
 
     const SERIAL_DELAY_CYCLES: u32 = 512;
 
-    pub(crate) fn new(mut gpio1: Port<1>, pins: Pins, mut gpt1: Gpt1) -> Self {
+    const PWM_FREQUENCY_HZ: u32 = 20_000;
+    const PWM_ROLLOVER_VALUE: i16 = (IPG_FREQUENCY / Self::PWM_FREQUENCY_HZ) as i16;
+    const PWM_DUTY_CYCLE: f32 = 0.18;
+    const PWM_TURN_OFF_VALUE: i16 = (Self::PWM_ROLLOVER_VALUE as f32 * Self::PWM_DUTY_CYCLE) as i16;
+
+    pub(crate) fn new(
+        mut gpio1: Port<1>,
+        pins: Pins,
+        mut gpt1: Gpt1,
+        flexpwm4: (Pwm<4>, Submodules<4>),
+    ) -> Self {
         gpt1.set_clock_source(ClockSource::PeripheralClock);
         gpt1.set_mode(Mode::FreeRunning);
         gpt1.set_divider(1);
         gpt1.enable();
 
-        // let serial_timer = Blocking::from_gpt(gpt2);
+        let (mut pwm_control, (_, mut pwm_submodule, _, _)) = flexpwm4;
 
         let data_clock = gpio1.output(pins.p17);
         let clear_al = gpio1.output(pins.p18);
         let latch = gpio1.output(pins.p19);
         let enable_al = gpio1.output(pins.p20);
         let kick = gpio1.output(pins.p21);
-        let hold = gpio1.output(pins.p22);
-        let _pwm = (); // TODO
+        let hold_enable = gpio1.output(pins.p22);
+        let hold_pwm = PwmOutput::new_a(pins.p23);
+
+        pwm_submodule.set_debug_enable(true);
+        pwm_submodule.set_wait_enable(true);
+        pwm_submodule.set_clock_select(ClockSelect::Ipg);
+        pwm_submodule.set_prescaler(Prescaler::Prescaler1);
+        pwm_submodule.set_pair_operation(PairOperation::Independent);
+        pwm_submodule.set_load_mode(LoadMode::reload_full());
+        pwm_submodule.set_load_frequency(1);
+        pwm_submodule.set_initial_count(&pwm_control, 0);
+        pwm_submodule.set_value(
+            flexpwm::FULL_RELOAD_VALUE_REGISTER,
+            Self::PWM_ROLLOVER_VALUE,
+        );
+
+        hold_pwm.set_turn_on(&pwm_submodule, 0);
+        hold_pwm.set_turn_off(&pwm_submodule, Self::PWM_TURN_OFF_VALUE);
+        hold_pwm.set_output_enable(&mut pwm_control, true);
+        pwm_submodule.set_load_ok(&mut pwm_control);
+        pwm_submodule.set_running(&mut pwm_control, true);
 
         let mut pwm_manager = PwmManager {
             data_clock,
@@ -59,9 +94,10 @@ impl PwmManager {
             latch,
             enable_al,
             kick,
-            hold,
+            hold_enable,
+            _hold_pwm: hold_pwm,
             key_states: [KeyState::Off; NUM_KEYS],
-            need_update: false,
+            needs_update: false,
             tick_timer: gpt1,
             last_tick: 0,
             _pedal: KeyState::default(),
@@ -86,7 +122,7 @@ impl PwmManager {
         self.data_clock.clear();
         self.latch.clear();
         self.kick.clear();
-        self.hold.clear();
+        self.hold_enable.clear();
 
         self.enable_al.set();
         self.clear_al.set();
@@ -99,7 +135,7 @@ impl PwmManager {
     }
     pub(crate) fn set_key_state(&mut self, idx: KeyIndex, new_state: KeyState) {
         let current_state = self.key_states[idx];
-        self.need_update |= current_state.needs_update(&new_state);
+        self.needs_update |= current_state.needs_update(&new_state);
         self.key_states[idx] = new_state;
     }
     pub(crate) fn off(&mut self, idx: KeyIndex) {
@@ -133,30 +169,14 @@ impl PwmManager {
             },
         );
     }
-    fn send_update(&mut self, logger: &mut Logger) {
-        for (idx, key) in self.key_states.into_iter().rev().enumerate() {
-            match key {
-                KeyState::Pressing { .. } => {
-                    trace!(logger, "pressing {idx}");
-                    self.kick.set();
-                    self.hold.clear();
-                    self.sr_clock();
-                }
-                KeyState::Holding { .. } => {
-                    trace!(logger, "holding {idx}");
-                    self.kick.clear();
-                    self.hold.set();
-                    self.sr_clock();
-                }
-                KeyState::Off | KeyState::Repeating { .. } | KeyState::Releasing { .. } => {
-                    self.kick.clear();
-                    self.hold.clear();
-                    self.sr_clock();
-                }
-            }
+    fn send_update(&mut self, _logger: &mut Logger) {
+        for key in self.key_states.into_iter().rev() {
+            let _ = self.kick.set_state(key.get_kick_state());
+            let _ = self.hold_enable.set_state(key.get_hold_state());
+            self.sr_clock();
         }
         self.kick.clear();
-        self.hold.clear();
+        self.hold_enable.clear();
 
         self.latch.set();
         self.wait_clock();
@@ -232,9 +252,9 @@ impl PwmManager {
                 },
             }
         }
-        if self.need_update {
+        if self.needs_update {
             self.send_update(logger);
-            self.need_update = false;
+            self.needs_update = false;
         }
     }
 }

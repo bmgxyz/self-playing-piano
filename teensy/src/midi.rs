@@ -6,7 +6,7 @@ use midi_convert::{
 };
 use usbd_midi::UsbMidiEventPacket;
 
-use crate::{debug, trace, warn, KeyState, Logger, PwmManager};
+use crate::{debug, warn, KeyState, Logger, PwmManager};
 
 const MIDI_CHANNEL: Channel = Channel::C1;
 
@@ -41,8 +41,7 @@ pub(crate) fn handle_midi_packet(
                 match key_state {
                     KeyState::Off => {
                         let duration = velocity_to_duration(velocity);
-                        trace!(logger, "press with duration {duration}");
-                        pwm_manager.press(key_idx, velocity_to_duration(velocity))
+                        pwm_manager.press(key_idx, duration)
                     }
                     KeyState::Holding { .. } | KeyState::Releasing { .. } => {
                         pwm_manager.repeat(key_idx, velocity_to_duration(velocity));
