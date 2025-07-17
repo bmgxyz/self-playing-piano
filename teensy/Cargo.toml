@@ -20,6 +20,7 @@ teensy4-panic = "0.2.3"
 usbd-midi = "0.5.0"
 usbd-serial = "0.2.2"
 usb-device = { version = "0.3.2", features = ["control-buffer-256"] }
+rtic = { version = "2.2.0", features = ["thumbv7-backend"] }
 
 [dependencies.teensy4-bsp]
 git = "https://github.com/bmgxyz/teensy4-rs"

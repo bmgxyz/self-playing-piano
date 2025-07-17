@@ -2,7 +2,7 @@ use core::fmt::{Error, Write};
 
 use heapless::Vec;
 
-pub(crate) struct Logger {
+pub struct Logger {
     pub(crate) logs_to_write: Vec<u8, 1024>,
 }
 
