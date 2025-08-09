@@ -1,11 +1,11 @@
 [package]
-name = "controller"
+name = "midi-driver"
 version = "0.1.0"
 authors = ["Bradley Gannon <bradley@bradleygannon.com>"]
 edition = "2021"
 
 [[bin]]
-name = "controller"
+name = "midi-driver"
 test = false
 doctest = false
 bench = false
@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 cortex-m = "0.7.7"
 embedded-hal = "1.0.0"
+common = { path = "../common" }
 fugit = "0.3.7"
 heapless = "0.8.0"
 midi-convert = "0.2.0"
@@ -24,7 +25,7 @@ rtic = { version = "2.2.0", features = ["thumbv7-backend"] }
 
 [dependencies.teensy4-bsp]
 git = "https://github.com/bmgxyz/teensy4-rs"
-branch = "bump-hal"
+rev = "7e6887d"
 features = ["rt"]
 
 [profile.dev]

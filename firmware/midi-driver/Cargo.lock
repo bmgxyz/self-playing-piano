@@ -31,9 +31,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c8214115b7bf84099f1309324e63141d4c5d7cc26862f97a0a857dbefe165bd"
+checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 
 [[package]]
 name = "byteorder"
@@ -48,21 +48,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
-name = "controller"
+name = "common"
 version = "0.1.0"
-dependencies = [
- "cortex-m",
- "embedded-hal 1.0.0",
- "fugit",
- "heapless",
- "midi-convert",
- "rtic",
- "teensy4-bsp",
- "teensy4-panic",
- "usb-device",
- "usbd-midi",
- "usbd-serial",
-]
 
 [[package]]
 name = "cortex-m"
@@ -283,9 +270,9 @@ dependencies = [
 
 [[package]]
 name = "imxrt-iomuxc"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78b4a563b99861f792f7b29b94d00d07e1e5576d71c097f1c948fc3521157371"
+checksum = "074cb47c36b343ad554356e74ceb9bd26bb91dd39340bee075ed85f56dfe207b"
 
 [[package]]
 name = "imxrt-ral"
@@ -299,9 +286,9 @@ dependencies = [
 
 [[package]]
 name = "imxrt-rt"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "728afc5a901adf694cac7208d4e316b1f73ae09bb692aca77f239ae42f9de1ae"
+checksum = "421428c3ac89490b0a1933df02f76ea7a1df2512d0daaba6e89c3de74c02a36a"
 dependencies = [
  "cfg-if",
  "cortex-m-rt",
@@ -313,7 +300,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01e05f3646d0cd903d5ae90d8fae19ef3d6f9ad9f3864c9f74011a20dcb6329a"
 dependencies = [
- "bitflags 2.9.0",
+ "bitflags 2.9.1",
  "cortex-m",
  "ral-registers",
  "usb-device",
@@ -336,6 +323,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18f4776f9d450d481dc41e3dce9c10b11a9ec5955aca7c13215e94fe9477f2f7"
 dependencies = [
  "midi-types",
+]
+
+[[package]]
+name = "midi-driver"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "cortex-m",
+ "embedded-hal 1.0.0",
+ "fugit",
+ "heapless",
+ "midi-convert",
+ "rtic",
+ "teensy4-bsp",
+ "teensy4-panic",
+ "usb-device",
+ "usbd-midi",
+ "usbd-serial",
 ]
 
 [[package]]
@@ -531,7 +536,7 @@ dependencies = [
 [[package]]
 name = "teensy4-bsp"
 version = "0.5.0"
-source = "git+https://github.com/bmgxyz/teensy4-rs?branch=bump-hal#7e6887d993db222ab539551905481d449e88b6d7"
+source = "git+https://github.com/bmgxyz/teensy4-rs?rev=7e6887d#7e6887d993db222ab539551905481d449e88b6d7"
 dependencies = [
  "cortex-m",
  "imxrt-hal",
@@ -544,7 +549,7 @@ dependencies = [
 [[package]]
 name = "teensy4-fcb"
 version = "0.4.0"
-source = "git+https://github.com/bmgxyz/teensy4-rs?branch=bump-hal#7e6887d993db222ab539551905481d449e88b6d7"
+source = "git+https://github.com/bmgxyz/teensy4-rs?rev=7e6887d#7e6887d993db222ab539551905481d449e88b6d7"
 dependencies = [
  "imxrt-boot-gen",
 ]
@@ -558,7 +563,7 @@ checksum = "7c733a579f17557d093df6714a57d61841e9cbaa222384ca7ee1fbb334888c20"
 [[package]]
 name = "teensy4-pins"
 version = "0.3.2"
-source = "git+https://github.com/bmgxyz/teensy4-rs?branch=bump-hal#7e6887d993db222ab539551905481d449e88b6d7"
+source = "git+https://github.com/bmgxyz/teensy4-rs?rev=7e6887d#7e6887d993db222ab539551905481d449e88b6d7"
 dependencies = [
  "imxrt-iomuxc",
 ]

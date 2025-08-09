@@ -4,6 +4,51 @@ use midi_convert::midi_types::Note;
 
 use crate::NUM_KEYS;
 
+#[derive(Debug)]
+pub(crate) struct InvalidModuleIndex;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModuleIndex(usize);
+
+impl TryFrom<usize> for ModuleIndex {
+    type Error = InvalidModuleIndex;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            idx if idx < Self::NUM_MODULES => Ok(ModuleIndex(idx)),
+            _ => Err(InvalidModuleIndex),
+        }
+    }
+}
+
+impl From<ModuleIndex> for usize {
+    fn from(value: ModuleIndex) -> Self {
+        value.0
+    }
+}
+
+impl From<KeyIndex> for ModuleIndex {
+    fn from(value: KeyIndex) -> Self {
+        let idx: usize = value.into();
+        (idx / Self::KEYS_PER_MODULE).try_into().unwrap()
+    }
+}
+
+impl ModuleIndex {
+    const KEYS_PER_MODULE: usize = 8;
+    pub(crate) const NUM_MODULES: usize = NUM_KEYS.div_ceil(Self::KEYS_PER_MODULE);
+
+    pub(crate) fn as_key_indices(&self) -> [KeyIndex; Self::KEYS_PER_MODULE] {
+        let mut indices = [0usize.try_into().unwrap(); Self::KEYS_PER_MODULE];
+        let module_idx_usize: usize = (*self).into();
+        let start = module_idx_usize * Self::KEYS_PER_MODULE;
+        let end = start + Self::KEYS_PER_MODULE;
+        for idx in start..end {
+            // indices[idx] = idx.try_into().unwrap();
+        }
+        indices
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub(crate) struct KeyIndex(u8);
 

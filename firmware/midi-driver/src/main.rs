@@ -27,17 +27,15 @@ mod midi;
 mod pwm;
 mod state;
 
-use index::KeyIndex;
 use log::Logger;
-use midi::handle_midi_packet;
 use pwm::PwmManager;
 use state::KeyState;
 
-const NUM_KEYS: usize = 88;
-
 #[rtic::app(device = teensy4_bsp, peripherals = false)]
 mod app {
+    use common::NUM_KEYS;
     use heapless::spsc::Queue;
+    use teensy4_bsp::{board::Lpi2c1, hal::ccm::lpi2c_clk};
     use usb_device::device::UsbDevice;
     use usbd_midi::UsbMidiEventPacket;
 
@@ -65,12 +63,19 @@ mod app {
         let board::Resources {
             mut ccm,
             gpt1,
-            gpio1,
+            mut gpio1,
             pins,
             usb,
-            flexpwm4,
+            lpi2c1,
             ..
         } = board::t41(instances);
+
+        clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::OFF);
+        lpi2c_clk::set_selection(&mut ccm, lpi2c_clk::Selection::Oscillator);
+        lpi2c_clk::set_divider(&mut ccm, lpi2c_clk::MIN_DIVIDER);
+        clock_gate::lpi2c::<1>().set(&mut ccm, clock_gate::ON);
+
+        let i2c: Lpi2c1 = board::lpi2c(lpi2c1, pins.p19, pins.p18, board::Lpi2cClockSpeed::KHz100);
 
         clock_gate::usb().set(&mut ccm, clock_gate::ON);
         let bus_adapter = BusAdapter::with_speed(usb, &EP_MEM, &EP_STATE, Speed::LowFull);
@@ -96,7 +101,9 @@ mod app {
         }
         device.bus().configure();
 
-        let pwm_manager = PwmManager::new(gpio1, pins, gpt1, flexpwm4);
+        let pwm_enable = gpio1.output(pins.p20);
+
+        let pwm_manager = PwmManager::new(gpt1, [KeyState::Off; NUM_KEYS], i2c, pwm_enable);
 
         debug!(logger, "Bothoven ready");
 
@@ -122,7 +129,7 @@ mod app {
                 ctx.shared.midi_packets.lock(|midi_packets| {
                     while let Some(packet) = midi_packets.dequeue() {
                         debug!(logger, "Dequeued packet: {:?}", packet);
-                        handle_midi_packet(logger, packet, pwm_manager);
+                        pwm_manager.handle_midi_packet(logger, packet);
                     }
                 });
                 pwm_manager.tick(logger);

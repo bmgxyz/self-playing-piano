@@ -6,7 +6,7 @@ use midi_convert::{
 };
 use usbd_midi::UsbMidiEventPacket;
 
-use crate::{debug, warn, KeyState, Logger, PwmManager};
+use crate::{debug, warn, FsmManager, KeyState, Logger};
 
 const MIDI_CHANNEL: Channel = Channel::C1;
 
@@ -17,7 +17,7 @@ fn velocity_to_duration(velocity: Value7) -> MicrosDurationU32 {
 pub(crate) fn handle_midi_packet(
     logger: &mut Logger,
     packet: UsbMidiEventPacket,
-    pwm_manager: &mut PwmManager,
+    pwm_manager: &mut FsmManager,
 ) {
     let message = match MidiMessage::try_parse_slice(packet.payload_bytes()) {
         Ok(m) => m,
