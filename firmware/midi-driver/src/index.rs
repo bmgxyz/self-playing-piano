@@ -64,7 +64,7 @@ impl From<KeyIndex> for u8 {
 impl TryFrom<KeyIndex> for ModuleKeyIndex {
     type Error = InvalidModuleKeyIndex;
     fn try_from(value: KeyIndex) -> Result<Self, Self::Error> {
-        (value.0 / NUM_MODULES as u8).try_into()
+        (value.0 % NUM_KEYS_PER_MODULE as u8).try_into()
     }
 }
 
@@ -76,7 +76,7 @@ impl TryFrom<Note> for KeyIndex {
 
     fn try_from(value: Note) -> Result<Self, Self::Error> {
         let idx: u8 = value.into();
-        if Self::MIN_MIDI_PITCH < idx && idx <= Self::MAX_MIDI_PITCH {
+        if (Self::MIN_MIDI_PITCH..=Self::MAX_MIDI_PITCH).contains(&idx) {
             (idx - Self::MIN_MIDI_PITCH).try_into()
         } else {
             Err(InvalidKeyIndex)

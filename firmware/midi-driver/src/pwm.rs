@@ -5,7 +5,7 @@ use embedded_hal::{digital::OutputPin, i2c::I2c};
 use fugit::MicrosDurationU32;
 use heapless::spsc::Queue;
 use teensy4_bsp::{
-    board::{self, Lpi2c1},
+    board::Lpi2c1,
     hal::{
         gpio::Output,
         gpt::{ClockSource, Gpt1, Mode},
@@ -14,7 +14,6 @@ use teensy4_bsp::{
 };
 
 use crate::{
-    debug,
     index::{KeyIndex, ModuleIndex},
     log::Logger,
     state::KeyState,
@@ -180,9 +179,8 @@ impl PwmManager {
             }
         }
         while let Some((module_idx, command)) = self.updates.dequeue() {
-            debug!(logger, "foo");
-            delay(board::ARM_FREQUENCY / 1_000_000 * 50);
             let _ = self.pwm_enable.set_low();
+            delay(75_000);
             let address = module_idx.as_twi_address();
             let payload = (&command).into();
             if let Err(e) = self.i2c.write(address, &[payload]) {
