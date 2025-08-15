@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "self-playing-piano")(type "KiCad")(uri "/home/bradley/Projects/self-playing-piano/eda/self-playing-piano.kicad_sym")(options "")(descr ""))
+)
