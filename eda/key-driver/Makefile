@@ -12,26 +12,30 @@ pcb2gcode: gerber/key-driver.drl \
 		   gerber/key-driver-F_Cu.gtl \
 		   gerber/key-driver-job.gbrjob
 	mkdir -p gcode
-	pcb2gcode
+	pcb2gcode \
+		--drill gerber/key-driver.drl \
+		--front gerber/key-driver-F_Cu.gtl \
+		--outline gerber/key-driver-Edge_Cuts.gm1 \
+		--basename key-driver
 	rm gcode/*.svg
 
 process_gcode: gcode/tracks.gcode gcode/drill.gcode gcode/outline.gcode
 
-dx := -1.22497
-dy := -1.22503
-xm := 50.575012
+dx := -1.22496
+dy := -1.22502
+xm := 55.450015
 
-gcode/tracks.gcode: ./gerber/key-driver-F_Cu.gtl ./gerber/key-driver-job.gbrjob
+gcode/tracks.gcode: gerber/key-driver-F_Cu.gtl gerber/key-driver-job.gbrjob
 	gctk translate -x $(dx) -y $(dy) < ./gcode/key-driver_front.ngc \
 	| gctk mirror -x $(xm) > ./gcode/tracks.gcode
 	rm ./gcode/key-driver_front.ngc
 
-gcode/drill.gcode: ./gerber/key-driver.drl ./gerber/key-driver-job.gbrjob
+gcode/drill.gcode: gerber/key-driver.drl gerber/key-driver-job.gbrjob
 	gctk translate -x $(dx) -y $(dy) < ./gcode/key-driver_milldrill.ngc \
 	| gctk mirror -x $(xm) > ./gcode/drill.gcode
 	rm ./gcode/key-driver_milldrill.ngc
 
-gcode/outline.gcode: ./gerber/key-driver-Edge_Cuts.gm1 ./gerber/key-driver-job.gbrjob
+gcode/outline.gcode: gerber/key-driver-Edge_Cuts.gm1 gerber/key-driver-job.gbrjob
 	gctk translate -x $(dx) -y $(dy) < ./gcode/key-driver_outline.ngc \
 	| gctk mirror -x $(xm) > ./gcode/outline.gcode
 	rm ./gcode/key-driver_outline.ngc
