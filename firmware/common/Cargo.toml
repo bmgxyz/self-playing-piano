@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bounded-integer = { version = "0.6.0", features = ["macro", "serde1"] }
+heapless = "0.7.17"
+postcard = "1.1.3"
+serde = { version = "1.0.219", default-features = false, features = [
+    "serde_derive",
+] }

@@ -1,38 +1,127 @@
 #![no_std]
 #![no_main]
-#![feature(asm_experimental_arch)]
+#![feature(abi_avr_interrupt)]
+
+use core::{
+    cell::{OnceCell, RefCell, UnsafeCell},
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use arduino_hal::{
     delay_us,
-    port::{mode::Output, Pin, PinOps},
+    port::{mode::Output, Pin},
+    prelude::*,
 };
+use atmega_hal::{
+    clock::MHz16,
+    pac::USART0,
+    port::{mode::Input, PD0, PD1},
+    usart::{Event, Usart},
+};
+use avr_device::interrupt::{self, Mutex};
+use common::{
+    Action, ModuleIndex, Schedule, ACK_RESPONSE, NAK_RESPONSE, SERIAL_BAUD_RATE, SERIAL_BUF_SIZE,
+};
+use embedded_hal::digital::OutputPin;
+use heapless::Vec;
 use panic_halt as _;
 
-use common::{Command, ModuleKeyIndex, ModuleKeyState, TWI_BASE_ADDR};
+type Serial = Usart<USART0, Pin<Input, PD0>, Pin<Output, PD1>, MHz16>;
 
-/// "Previously addressed with own SLA+W; data has been received; ACK has been returned"
-///
-/// Listed as `TWSR == 0x80` in the 328P manual (Table 21-5)
-const TWI_SLA_W_DATA_RECV: u8 = 0x10;
+static SERIAL: Mutex<OnceCell<UnsafeCell<Serial>>> = Mutex::new(OnceCell::new());
+static SERIAL_BUF: Mutex<RefCell<Vec<u8, SERIAL_BUF_SIZE>>> = Mutex::new(RefCell::new(Vec::new()));
+static MODULE_INDEX: Mutex<OnceCell<ModuleIndex>> = Mutex::new(OnceCell::new());
+static SCHEDULE: Mutex<RefCell<Schedule>> = Mutex::new(RefCell::new(Schedule {
+    actions: Vec::new(),
+}));
+static SCHEDULE_UPDATE_FLAG: AtomicBool = AtomicBool::new(false);
 
-// TODO check for keys that may be stuck due to missed or absent commands and release them
-// automatically
+#[avr_device::interrupt(atmega328p)]
+fn USART_RX() {
+    if let Some(b) = read_serial() {
+        interrupt::free(|cs| {
+            let mut buf = SERIAL_BUF.borrow(cs).borrow_mut();
+            if buf.is_full() {
+                buf.remove(0);
+            }
+            let _ = buf.push(b);
+            if buf.len() >= 2 && buf.ends_with(b"\r\n") {
+                buf.pop();
+                buf.pop();
+                match Schedule::deserialize(buf.as_slice()) {
+                    Ok(msg) => {
+                        let mut schedule = SCHEDULE.borrow(cs).borrow_mut();
+                        *schedule = msg;
+                        SCHEDULE_UPDATE_FLAG.store(true, Ordering::SeqCst);
+                        write_serial(&ACK_RESPONSE);
+                    }
+                    Err(_) => write_serial(&NAK_RESPONSE),
+                }
+                buf.clear();
+            }
+        })
+    }
+}
+
+fn set_serial(serial: Serial) -> Result<(), Serial> {
+    interrupt::free(|cs| match SERIAL.borrow(cs).set(UnsafeCell::new(serial)) {
+        Ok(()) => Ok(()),
+        Err(u) => Err(u.into_inner()),
+    })
+}
+
+fn read_serial() -> Option<u8> {
+    interrupt::free(|cs| {
+        if let Some(foo) = SERIAL.borrow(cs).get() {
+            let f = foo.get();
+            if let Some(s) = unsafe { f.as_mut() } {
+                s.read().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn write_serial(message: &[u8]) {
+    interrupt::free(|cs| {
+        if let Some(foo) = SERIAL.borrow(cs).get() {
+            let f = foo.get();
+            if let Some(s) = unsafe { f.as_mut() } {
+                for byte in message {
+                    s.write_byte(*byte);
+                }
+            }
+        }
+    })
+}
 
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
 
+    let mut serial = arduino_hal::default_serial!(dp, pins, SERIAL_BAUD_RATE);
+    serial.listen(Event::RxComplete);
+    let _ = set_serial(serial);
+    unsafe { avr_device::interrupt::enable() };
+
     let addr_0 = pins.a0.into_pull_up_input();
     let addr_1 = pins.a1.into_pull_up_input();
     let addr_2 = pins.a2.into_pull_up_input();
-    let module_addr = TWI_BASE_ADDR
-        | (addr_2.is_high() as u8) << 2
-        | (addr_1.is_high() as u8) << 1
-        | addr_0.is_high() as u8;
-    let twi = dp.TWI;
-    twi.twar.write(|w| w.twa().variant(module_addr));
-    twi.twcr.write(|w| w.twea().set_bit().twen().set_bit());
+    let module_index = match ModuleIndex::new(
+        (addr_2.is_high() as u8) << 2 | (addr_1.is_high() as u8) << 1 | addr_0.is_high() as u8,
+    ) {
+        Some(idx) => idx,
+        None => unreachable!(),
+    };
+    interrupt::free(|cs| {
+        if let Err(_) = MODULE_INDEX.borrow(cs).set(module_index) {
+            unreachable!()
+        }
+    });
 
     let mut key_00 = pins.d2.into_output();
     let mut key_01 = pins.d3.into_output();
@@ -46,66 +135,35 @@ fn main() -> ! {
     let mut key_09 = pins.d11.into_output();
     let mut key_10 = pins.d12.into_output();
 
-    let mut led = pins.d13.into_output();
-    let listen = pins.a3.into_pull_up_input();
-
-    let mut key_states = [ModuleKeyState::Off; 11];
-
-    led.set_low();
-
+    let mut schedule = interrupt::free(|cs| SCHEDULE.borrow(cs).clone().into_inner());
     loop {
-        if listen.is_low() {
-            led.set_high();
-            if twi.twsr.read().tws().bits() == TWI_SLA_W_DATA_RECV {
-                if let Ok(command) = twi.twdr.read().bits().try_into() {
-                    let Command { key_idx, new_state } = command;
-                    key_states[<ModuleKeyIndex as Into<usize>>::into(key_idx)] = new_state;
+        if SCHEDULE_UPDATE_FLAG.load(Ordering::SeqCst) {
+            schedule = interrupt::free(|cs| SCHEDULE.borrow(cs).clone().into_inner());
+            SCHEDULE_UPDATE_FLAG.store(false, Ordering::SeqCst);
+        }
+        for action in schedule.actions.iter() {
+            match action {
+                Action::Delay { duration_us } => delay_us((*duration_us).into()),
+                Action::Transition {
+                    module_key_index,
+                    new_state,
+                } => {
+                    let _ = match module_key_index.get() {
+                        0 => key_00.set_state((*new_state).into()),
+                        1 => key_01.set_state((*new_state).into()),
+                        2 => key_02.set_state((*new_state).into()),
+                        3 => key_03.set_state((*new_state).into()),
+                        4 => key_04.set_state((*new_state).into()),
+                        5 => key_05.set_state((*new_state).into()),
+                        6 => key_06.set_state((*new_state).into()),
+                        7 => key_07.set_state((*new_state).into()),
+                        8 => key_08.set_state((*new_state).into()),
+                        9 => key_09.set_state((*new_state).into()),
+                        10 => key_10.set_state((*new_state).into()),
+                        _ => unreachable!(),
+                    };
                 }
             }
-            twi.twcr
-                .write(|w| w.twint().set_bit().twen().set_bit().twea().set_bit());
-            led.set_low();
-        } else {
-            rising(&mut key_00, &key_states[0]);
-            rising(&mut key_01, &key_states[1]);
-            rising(&mut key_02, &key_states[2]);
-            rising(&mut key_03, &key_states[3]);
-            rising(&mut key_04, &key_states[4]);
-            rising(&mut key_05, &key_states[5]);
-            rising(&mut key_06, &key_states[6]);
-            rising(&mut key_07, &key_states[7]);
-            rising(&mut key_08, &key_states[8]);
-            rising(&mut key_09, &key_states[9]);
-            rising(&mut key_10, &key_states[10]);
-            delay_us(9);
-            falling(&mut key_00, &key_states[0]);
-            falling(&mut key_01, &key_states[1]);
-            falling(&mut key_02, &key_states[2]);
-            falling(&mut key_03, &key_states[3]);
-            falling(&mut key_04, &key_states[4]);
-            falling(&mut key_05, &key_states[5]);
-            falling(&mut key_06, &key_states[6]);
-            falling(&mut key_07, &key_states[7]);
-            falling(&mut key_08, &key_states[8]);
-            falling(&mut key_09, &key_states[9]);
-            falling(&mut key_10, &key_states[10]);
-            delay_us(41);
         }
-    }
-}
-
-fn rising<P: PinOps>(pin: &mut Pin<Output, P>, state: &ModuleKeyState) {
-    match state {
-        ModuleKeyState::Off => pin.set_low(),
-        ModuleKeyState::Holding => pin.set_high(),
-        ModuleKeyState::Pressing => pin.set_high(),
-    }
-}
-
-fn falling<P: PinOps>(pin: &mut Pin<Output, P>, state: &ModuleKeyState) {
-    match state {
-        ModuleKeyState::Off => pin.set_low(),
-        ModuleKeyState::Holding => pin.set_low(),
-        ModuleKeyState::Pressing => pin.set_high(),
     }
 }
