@@ -1,0 +1,9 @@
+[package]
+name = "bothoven"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common = { version = "0.1.0", path = "../common" }
+heapless = "0.7.17"
+serialport = "4.7.2"
