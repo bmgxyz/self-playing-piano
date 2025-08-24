@@ -37,7 +37,13 @@ impl KeyIndex {
     }
 }
 
-impl Index<ModuleKeyIndex> for [KeyState; NUM_KEYS_PER_MODULE] {
+impl ModuleIndex {
+    pub fn get_first_key_index(&self) -> KeyIndex {
+        KeyIndex::new(self.get() * NUM_KEYS_PER_MODULE as u8).unwrap()
+    }
+}
+
+impl Index<ModuleKeyIndex> for ModuleKeyStates {
     type Output = KeyState;
 
     fn index(&self, index: ModuleKeyIndex) -> &Self::Output {
@@ -45,8 +51,22 @@ impl Index<ModuleKeyIndex> for [KeyState; NUM_KEYS_PER_MODULE] {
     }
 }
 
-impl IndexMut<ModuleKeyIndex> for [KeyState; NUM_KEYS_PER_MODULE] {
+impl IndexMut<ModuleKeyIndex> for ModuleKeyStates {
     fn index_mut(&mut self, index: ModuleKeyIndex) -> &mut Self::Output {
+        &mut self[index.get() as usize]
+    }
+}
+
+impl Index<KeyIndex> for KeyStates {
+    type Output = KeyState;
+
+    fn index(&self, index: KeyIndex) -> &Self::Output {
+        &self[index.get() as usize]
+    }
+}
+
+impl IndexMut<KeyIndex> for KeyStates {
+    fn index_mut(&mut self, index: KeyIndex) -> &mut Self::Output {
         &mut self[index.get() as usize]
     }
 }
@@ -106,12 +126,15 @@ impl Display for Schedule {
 pub const ACK_RESPONSE: [u8; 3] = *b"/\r\n";
 pub const NAK_RESPONSE: [u8; 3] = *b"?\r\n";
 
-pub type KeyStates = [KeyState; NUM_KEYS_PER_MODULE];
+pub type KeyStates = [KeyState; NUM_KEYS];
+pub type ModuleKeyStates = [KeyState; NUM_KEYS_PER_MODULE];
 
-pub fn build_schedule(key_states: &KeyStates) -> Schedule {
+pub fn build_schedule(module_index: &ModuleIndex, key_states: &KeyStates) -> Schedule {
     let mut falling_edges: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> =
         key_states
             .iter()
+            .skip(module_index.get_first_key_index().into())
+            .take(NUM_KEYS_PER_MODULE)
             .enumerate()
             .map(|(idx, ks)| {
                 (
@@ -161,21 +184,6 @@ pub fn build_schedule(key_states: &KeyStates) -> Schedule {
     schedule
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Message {
-    pub idx: KeyIndex,
-    pub state: KeyState,
-}
-
-impl Message {
-    pub fn serialize(&self) -> Result<Vec<u8, 32>, postcard::Error> {
-        postcard::to_vec(self)
-    }
-    pub fn deserialize(bytes: &[u8]) -> Result<Message, postcard::Error> {
-        postcard::from_bytes(bytes)
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum KeyState {
     #[default]
@@ -217,27 +225,45 @@ impl KeyState {
         }
     }
 
-    pub fn off(&mut self) {
+    pub fn midi_note_on(&mut self, velocity: &KeyVelocity) {
+        match self {
+            KeyState::Off | KeyState::Pressing { .. } => self.press(*velocity),
+            KeyState::Holding { .. } | KeyState::Repeating { .. } | KeyState::Releasing { .. } => {
+                self.repeat(*velocity)
+            }
+        }
+    }
+    pub fn midi_note_off(&mut self) {
+        match self {
+            KeyState::Off => self.off(),
+            KeyState::Pressing { .. }
+            | KeyState::Holding { .. }
+            | KeyState::Repeating { .. }
+            | KeyState::Releasing { .. } => self.release(),
+        }
+    }
+
+    fn off(&mut self) {
         *self = KeyState::Off;
     }
-    pub fn press(&mut self, velocity: KeyVelocity) {
+    fn press(&mut self, velocity: KeyVelocity) {
         *self = KeyState::Pressing {
             timeout_us: Self::PRESSING_TIMEOUT_US,
             velocity,
         };
     }
-    pub fn hold(&mut self) {
+    fn hold(&mut self) {
         *self = KeyState::Holding {
             timeout_us: Self::HOLD_TIMEOUT_US,
         };
     }
-    pub fn repeat(&mut self, velocity: KeyVelocity) {
+    fn repeat(&mut self, velocity: KeyVelocity) {
         *self = KeyState::Repeating {
             timeout_us: Self::REPEAT_TIMEOUT_US,
             velocity,
         };
     }
-    pub fn release(&mut self) {
+    fn release(&mut self) {
         *self = KeyState::Releasing {
             timeout_us: Self::RELEASE_TIMEOUT_US,
         };

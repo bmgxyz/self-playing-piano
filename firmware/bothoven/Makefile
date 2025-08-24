@@ -5,4 +5,4 @@ transition-diagram.svg: transition-diagram.gv
 
 clean:
 	cargo clean
-	rm -f *.hex *.svg
+	rm -f *.svg
