@@ -121,7 +121,7 @@ fn main() -> ! {
         }
     });
 
-    let mut key_00 = pins.d13.into_output();
+    let mut key_00 = pins.d2.into_output();
     let mut key_01 = pins.d3.into_output();
     let mut key_02 = pins.d4.into_output();
     let mut key_03 = pins.d5.into_output();
