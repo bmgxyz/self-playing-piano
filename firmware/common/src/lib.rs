@@ -88,16 +88,127 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    pub fn new() -> Schedule {
+    const TOTAL_PWM_PERIOD_US: u8 = 50;
+
+    pub const fn empty() -> Schedule {
         Schedule {
             actions: Vec::new(),
         }
     }
+    pub fn all_off() -> Schedule {
+        Self {
+            actions: Vec::from_slice(&[
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<0>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<1>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<2>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<3>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<4>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<5>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<6>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<7>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<8>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<9>(),
+                    new_state: false,
+                },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<10>(),
+                    new_state: false,
+                },
+                Action::Delay {
+                    duration_us: Self::TOTAL_PWM_PERIOD_US,
+                },
+            ])
+            .unwrap(),
+        }
+    }
+
     pub fn serialize(&self) -> Result<Vec<u8, SERIAL_BUF_SIZE>, postcard::Error> {
         postcard::to_vec(self)
     }
     pub fn deserialize(bytes: &[u8]) -> Result<Schedule, postcard::Error> {
         postcard::from_bytes(bytes)
+    }
+
+    pub fn build(module_index: &ModuleIndex, key_states: &KeyStates) -> Schedule {
+        let states: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> = key_states
+            .iter()
+            .skip(module_index.get_first_key_index().into())
+            .take(NUM_KEYS_PER_MODULE)
+            .enumerate()
+            .map(|(idx, ks)| {
+                (
+                    ks.get_duty_cycle(),
+                    ModuleKeyIndex::new_saturating(idx as u8),
+                )
+            })
+            .collect();
+        let mut falling_edges: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> =
+            states
+                .clone()
+                .into_iter()
+                .filter(|(dc, _idx)| dc.get() != 0)
+                .collect();
+        falling_edges.sort_unstable();
+
+        let starting_pin_states = states.iter().map(|(dc, idx)| Action::Transition {
+            module_key_index: *idx,
+            new_state: *dc > 0,
+        });
+        let mut schedule = Schedule::empty();
+        schedule.actions.extend(starting_pin_states);
+        let mut period_position_us = 0;
+        for (duty_cycle, module_key_index) in falling_edges.iter() {
+            let new_period_position_us =
+                (Self::TOTAL_PWM_PERIOD_US as f32 * (duty_cycle.get() as f32) / 100.) as u8;
+            let delay_duration_us = new_period_position_us.saturating_sub(period_position_us);
+            if delay_duration_us > 0 {
+                let _ = schedule.actions.push(Action::Delay {
+                    duration_us: delay_duration_us,
+                });
+            }
+            let _ = schedule.actions.push(Action::Transition {
+                module_key_index: *module_key_index,
+                new_state: false,
+            });
+            period_position_us = new_period_position_us;
+        }
+        // handle last delay
+        let delay_duration_us = Self::TOTAL_PWM_PERIOD_US.saturating_sub(period_position_us);
+        if delay_duration_us > 0 {
+            let _ = schedule.actions.push(Action::Delay {
+                duration_us: delay_duration_us,
+            });
+        }
+
+        schedule
     }
 }
 
@@ -128,61 +239,6 @@ pub const NAK_RESPONSE: [u8; 3] = *b"?\r\n";
 
 pub type KeyStates = [KeyState; NUM_KEYS];
 pub type ModuleKeyStates = [KeyState; NUM_KEYS_PER_MODULE];
-
-pub fn build_schedule(module_index: &ModuleIndex, key_states: &KeyStates) -> Schedule {
-    let mut falling_edges: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> =
-        key_states
-            .iter()
-            .skip(module_index.get_first_key_index().into())
-            .take(NUM_KEYS_PER_MODULE)
-            .enumerate()
-            .map(|(idx, ks)| {
-                (
-                    ks.get_duty_cycle(),
-                    ModuleKeyIndex::new_saturating(idx as u8),
-                )
-            })
-            .filter(|(dc, _idx)| dc.get() != 0)
-            .collect();
-
-    let mut schedule = Schedule::new();
-    if falling_edges.is_empty() {
-        return schedule;
-    }
-    falling_edges.sort_unstable();
-    let rising_edges = falling_edges.iter().map(|(_dc, idx)| Action::Transition {
-        module_key_index: *idx,
-        new_state: true,
-    });
-    schedule.actions.extend(rising_edges.clone());
-    // TODO factor out
-    const TOTAL_PWM_PERIOD_US: u8 = 50;
-    let mut period_position_us = 0;
-    for (duty_cycle, module_key_index) in falling_edges.iter() {
-        let new_period_position_us =
-            (TOTAL_PWM_PERIOD_US as f32 * (duty_cycle.get() as f32) / 100.) as u8;
-        let delay_duration_us = new_period_position_us.saturating_sub(period_position_us);
-        if delay_duration_us > 0 {
-            let _ = schedule.actions.push(Action::Delay {
-                duration_us: delay_duration_us,
-            });
-        }
-        let _ = schedule.actions.push(Action::Transition {
-            module_key_index: *module_key_index,
-            new_state: false,
-        });
-        period_position_us = new_period_position_us;
-    }
-    // handle last delay
-    let delay_duration_us = TOTAL_PWM_PERIOD_US.saturating_sub(period_position_us);
-    if delay_duration_us > 0 {
-        let _ = schedule.actions.push(Action::Delay {
-            duration_us: delay_duration_us,
-        });
-    }
-
-    schedule
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum KeyState {

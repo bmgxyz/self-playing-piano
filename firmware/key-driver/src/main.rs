@@ -31,10 +31,8 @@ type Serial = Usart<USART0, Pin<Input, PD0>, Pin<Output, PD1>, MHz16>;
 static SERIAL: Mutex<OnceCell<UnsafeCell<Serial>>> = Mutex::new(OnceCell::new());
 static SERIAL_BUF: Mutex<RefCell<Vec<u8, SERIAL_BUF_SIZE>>> = Mutex::new(RefCell::new(Vec::new()));
 static MODULE_INDEX: Mutex<OnceCell<ModuleIndex>> = Mutex::new(OnceCell::new());
-static SCHEDULE: Mutex<RefCell<Schedule>> = Mutex::new(RefCell::new(Schedule {
-    actions: Vec::new(),
-}));
-static SCHEDULE_UPDATE_FLAG: AtomicBool = AtomicBool::new(false);
+static SCHEDULE: Mutex<RefCell<Schedule>> = Mutex::new(RefCell::new(Schedule::empty()));
+static SCHEDULE_UPDATE_FLAG: AtomicBool = AtomicBool::new(true);
 
 #[avr_device::interrupt(atmega328p)]
 fn USART_RX() {
@@ -49,9 +47,9 @@ fn USART_RX() {
                 buf.pop();
                 buf.pop();
                 match Schedule::deserialize(buf.as_slice()) {
-                    Ok(msg) => {
+                    Ok(new_schedule) => {
                         let mut schedule = SCHEDULE.borrow(cs).borrow_mut();
-                        *schedule = msg;
+                        *schedule = new_schedule;
                         SCHEDULE_UPDATE_FLAG.store(true, Ordering::SeqCst);
                         write_serial(&ACK_RESPONSE);
                     }
@@ -123,7 +121,7 @@ fn main() -> ! {
         }
     });
 
-    let mut key_00 = pins.d2.into_output();
+    let mut key_00 = pins.d13.into_output();
     let mut key_01 = pins.d3.into_output();
     let mut key_02 = pins.d4.into_output();
     let mut key_03 = pins.d5.into_output();
@@ -135,7 +133,13 @@ fn main() -> ! {
     let mut key_09 = pins.d11.into_output();
     let mut key_10 = pins.d12.into_output();
 
-    let mut schedule = interrupt::free(|cs| SCHEDULE.borrow(cs).clone().into_inner());
+    interrupt::free(|cs| {
+        let mut schedule = SCHEDULE.borrow(cs).borrow_mut();
+        *schedule = Schedule::all_off();
+    });
+
+    let mut schedule = Schedule::empty();
+
     loop {
         if SCHEDULE_UPDATE_FLAG.load(Ordering::SeqCst) {
             schedule = interrupt::free(|cs| SCHEDULE.borrow(cs).clone().into_inner());

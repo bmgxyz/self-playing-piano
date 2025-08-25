@@ -7,7 +7,7 @@ use std::{
 
 use common::{
     ACK_RESPONSE, KeyIndex, KeyState, KeyVelocity, ModuleIndex, NUM_KEYS, SERIAL_BAUD_RATE,
-    Schedule, build_schedule,
+    Schedule,
 };
 use midir::{Ignore, MidiInput, os::unix::VirtualInput};
 use serialport::SerialPort;
@@ -73,11 +73,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     let mut key_states = [KeyState::Off; NUM_KEYS];
-    let mut schedule = build_schedule(&ModuleIndex::const_new::<3>(), &key_states);
+    let mut schedule = Schedule::build(&ModuleIndex::const_new::<3>(), &key_states);
     let mut port = init_port("/dev/ttyUSB0")?;
     send_schedule(&mut port, &schedule)?;
     loop {
-        let next_loop = Instant::now() + LOOP_DELAY;
+        let loop_start = Instant::now();
         while let Ok(midi_bytes) = midi_rx.try_recv() {
             if let Ok(midi_message) = MidiMessage::try_from(midi_bytes.as_slice()) {
                 match midi_message {
@@ -111,9 +111,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             // TODO should probably switch state machine logic to millis instead of micros
             key_state.tick(LOOP_DELAY.as_micros() as u32);
         }
-        let new_schedule = build_schedule(&ModuleIndex::const_new::<3>(), &key_states);
+        let new_schedule = Schedule::build(&ModuleIndex::const_new::<3>(), &key_states);
         if new_schedule != schedule {
-            println!("{schedule}");
             schedule = new_schedule;
             send_schedule(&mut port, &schedule)?;
             if let Ok(resp) = read_response(&mut port)
@@ -122,8 +121,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("nak");
             }
         }
-        if next_loop > Instant::now() {
-            sleep(next_loop - Instant::now());
+        if loop_start.elapsed() < LOOP_DELAY {
+            sleep(loop_start + LOOP_DELAY - Instant::now());
         }
     }
 }
