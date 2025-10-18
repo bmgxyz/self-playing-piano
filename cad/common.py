@@ -1,8 +1,21 @@
 from cadquery import exporters
 import cadquery as cq
+import argparse
 import os
 
+from ocp_vscode import show_object, set_defaults, Camera
+
 # All dimensions are in millimeters
+
+
+class SiliconeFeet:
+    thickness = 3.8
+
+
+# See https://en.wikipedia.org/wiki/Lumber#North_American_softwoods
+class DimensionalLumber:
+    one_inch = 19  #   3/4"
+    four_inches = 89  # 3-1/2"
 
 
 class Plunger:
@@ -43,7 +56,6 @@ class KeyPlatform:
     window_fraction = 0.65
     white_plunger_hole_pos = 26
     black_plunger_hole_pos = 30
-    silicone_feet_thickness = 3.8
 
 
 class PlatformRib:
@@ -71,7 +83,7 @@ KeyPlatform.height = (
     BlackKey.bed_to_top_up
     + KeyPlatform.clearance
     + KeyPlatform.thickness
-    - KeyPlatform.silicone_feet_thickness
+    - SiliconeFeet.thickness
 )
 
 
@@ -80,7 +92,7 @@ class PlungerExtension:
     head_thickness = 2
     head_fuzz_thickness = 4
     white_key_stem_length = (
-        KeyPlatform.silicone_feet_thickness
+        SiliconeFeet.thickness
         + KeyPlatform.height
         + Solenoid.height
         - WhiteKey.bed_to_top_down
@@ -89,7 +101,7 @@ class PlungerExtension:
         - Plunger.height / 2
     )
     black_key_stem_length = (
-        KeyPlatform.silicone_feet_thickness
+        SiliconeFeet.thickness
         + KeyPlatform.height
         + Solenoid.height
         - BlackKey.bed_to_top_down
@@ -137,3 +149,16 @@ def self_tapping_hole(loc: cq.Location, radius: float, depth: float) -> cq.Solid
 def export_stl(model, name):
     pwd = os.path.dirname(os.path.abspath(__file__))
     exporters.export(model, f"{pwd}/{name}.stl")
+
+
+def run(build, export):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-e", "--export", action="store_true", help="Export model as STL"
+    )
+    args = parser.parse_args()
+    if args.export:
+        export()
+    else:
+        set_defaults(reset_camera=Camera.KEEP)
+        show_object(build())
