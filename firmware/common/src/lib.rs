@@ -10,36 +10,53 @@ use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
 pub const NUM_KEYS: usize = 88;
-pub const NUM_KEYS_PER_MODULE: usize = 11;
-pub const NUM_MODULES: usize = NUM_KEYS / NUM_KEYS_PER_MODULE;
+const NUM_PINS_PER_MODULE: usize = 12;
 
 pub const SERIAL_BUF_SIZE: usize = 128;
 pub const SERIAL_BAUD_RATE: u32 = 115_200;
 
 bounded_integer! { pub struct KeyIndex(0, 87); }
 bounded_integer! { pub struct ModuleIndex(0, 7); }
-bounded_integer! { pub struct ModuleKeyIndex(0, 10); }
+bounded_integer! { pub struct ModuleKeyIndex(0, 11); }
 bounded_integer! { pub struct KeyVelocity(0, 127); }
 bounded_integer! { pub struct DutyCyclePercent(0, 100); }
 
 impl KeyIndex {
     pub fn get_module_index(&self) -> ModuleIndex {
-        ModuleIndex::new(self.get() / NUM_KEYS_PER_MODULE as u8).unwrap()
+        ModuleIndex::new((self.get() + 4) / NUM_PINS_PER_MODULE as u8).unwrap()
     }
     pub fn get_module_key_index(&self) -> ModuleKeyIndex {
-        ModuleKeyIndex::new(self.get() % NUM_KEYS_PER_MODULE as u8).unwrap()
+        ModuleKeyIndex::new((self.get() + 4) % NUM_PINS_PER_MODULE as u8).unwrap()
     }
     pub fn from_module_indices(
         module_index: &ModuleIndex,
         module_key_index: &ModuleKeyIndex,
     ) -> Option<KeyIndex> {
-        KeyIndex::new(module_index.get() * NUM_KEYS_PER_MODULE as u8 + module_key_index.get())
+        KeyIndex::new(
+            (module_index.get() * NUM_PINS_PER_MODULE as u8 + module_key_index.get())
+                .saturating_sub(4),
+        )
+    }
+}
+
+#[test]
+fn key_index() {
+    for key_index_num in KeyIndex::MIN_VALUE..KeyIndex::MAX_VALUE {
+        let key_index = KeyIndex::new(key_index_num).unwrap();
+        assert_eq!(
+            key_index,
+            KeyIndex::from_module_indices(
+                &key_index.get_module_index(),
+                &key_index.get_module_key_index()
+            )
+            .unwrap()
+        );
     }
 }
 
 impl ModuleIndex {
     pub fn get_first_key_index(&self) -> KeyIndex {
-        KeyIndex::new(self.get() * NUM_KEYS_PER_MODULE as u8).unwrap()
+        KeyIndex::from_module_indices(self, &ModuleKeyIndex::const_new::<0>()).unwrap()
     }
 }
 
@@ -142,6 +159,10 @@ impl Schedule {
                     module_key_index: ModuleKeyIndex::const_new::<10>(),
                     new_state: false,
                 },
+                Action::Transition {
+                    module_key_index: ModuleKeyIndex::const_new::<11>(),
+                    new_state: false,
+                },
                 Action::Delay {
                     duration_us: Self::TOTAL_PWM_PERIOD_US,
                 },
@@ -158,10 +179,10 @@ impl Schedule {
     }
 
     pub fn build(module_index: &ModuleIndex, key_states: &KeyStates) -> Schedule {
-        let states: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> = key_states
+        let states: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_PINS_PER_MODULE> = key_states
             .iter()
             .skip(module_index.get_first_key_index().into())
-            .take(NUM_KEYS_PER_MODULE)
+            .take(NUM_PINS_PER_MODULE)
             .enumerate()
             .map(|(idx, ks)| {
                 (
@@ -170,7 +191,7 @@ impl Schedule {
                 )
             })
             .collect();
-        let mut falling_edges: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_KEYS_PER_MODULE> =
+        let mut falling_edges: Vec<(DutyCyclePercent, ModuleKeyIndex), NUM_PINS_PER_MODULE> =
             states
                 .clone()
                 .into_iter()
@@ -238,7 +259,7 @@ pub const ACK_RESPONSE: [u8; 3] = *b"/\r\n";
 pub const NAK_RESPONSE: [u8; 3] = *b"?\r\n";
 
 pub type KeyStates = [KeyState; NUM_KEYS];
-pub type ModuleKeyStates = [KeyState; NUM_KEYS_PER_MODULE];
+pub type ModuleKeyStates = [KeyState; NUM_PINS_PER_MODULE];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum KeyState {
@@ -352,13 +373,13 @@ impl KeyState {
                 timeout_us,
                 velocity,
             } => {
-                let v = velocity.clone();
+                let velocity = *velocity;
                 match timeout_us.saturating_sub(elapsed_us) {
-                    0 => self.press(v),
+                    0 => self.press(velocity),
                     timeout_us => {
                         *self = KeyState::Repeating {
                             timeout_us,
-                            velocity: v,
+                            velocity,
                         }
                     }
                 }

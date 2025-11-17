@@ -70,9 +70,8 @@ fn set_serial(serial: Serial) -> Result<(), Serial> {
 
 fn read_serial() -> Option<u8> {
     interrupt::free(|cs| {
-        if let Some(foo) = SERIAL.borrow(cs).get() {
-            let f = foo.get();
-            if let Some(s) = unsafe { f.as_mut() } {
+        if let Some(serial) = SERIAL.borrow(cs).get() {
+            if let Some(s) = unsafe { serial.get().as_mut() } {
                 s.read().ok()
             } else {
                 None
@@ -85,9 +84,8 @@ fn read_serial() -> Option<u8> {
 
 fn write_serial(message: &[u8]) {
     interrupt::free(|cs| {
-        if let Some(foo) = SERIAL.borrow(cs).get() {
-            let f = foo.get();
-            if let Some(s) = unsafe { f.as_mut() } {
+        if let Some(serial) = SERIAL.borrow(cs).get() {
+            if let Some(s) = unsafe { serial.get().as_mut() } {
                 for byte in message {
                     s.write_byte(*byte);
                 }
@@ -116,7 +114,7 @@ fn main() -> ! {
         None => unreachable!(),
     };
     interrupt::free(|cs| {
-        if let Err(_) = MODULE_INDEX.borrow(cs).set(module_index) {
+        if MODULE_INDEX.borrow(cs).set(module_index).is_err() {
             unreachable!()
         }
     });
@@ -132,6 +130,7 @@ fn main() -> ! {
     let mut key_08 = pins.d10.into_output();
     let mut key_09 = pins.d11.into_output();
     let mut key_10 = pins.d12.into_output();
+    let mut key_11 = pins.d13.into_output();
 
     interrupt::free(|cs| {
         let mut schedule = SCHEDULE.borrow(cs).borrow_mut();
@@ -164,6 +163,7 @@ fn main() -> ! {
                         8 => key_08.set_state((*new_state).into()),
                         9 => key_09.set_state((*new_state).into()),
                         10 => key_10.set_state((*new_state).into()),
+                        11 => key_11.set_state((*new_state).into()),
                         _ => unreachable!(),
                     };
                 }
