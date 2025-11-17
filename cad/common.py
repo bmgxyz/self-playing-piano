@@ -66,7 +66,7 @@ class SolenoidSupport:
     screw_hole_separation = 42.225
 
 
-class KeyPlatform:
+class KeySupport:
     clearance = 10
     white_plunger_hole_pos = 26
     black_plunger_hole_pos = 30
@@ -81,7 +81,7 @@ class PlungerExtension:
     # set the stem lengths such that the plungers are halfway out in the down position, which seems
     # to give the greatest efficiency for holding
     white_key_stem_length = (
-        KeyPlatform.elevation
+        KeySupport.elevation
         + SolenoidSupport.base_thickness
         + Solenoid.height
         - WhiteKey.elevation_down
@@ -90,7 +90,7 @@ class PlungerExtension:
         - head_fuzz_thickness
     )
     black_key_stem_length = (
-        KeyPlatform.elevation
+        KeySupport.elevation
         + SolenoidSupport.base_thickness
         + Solenoid.height
         - BlackKey.elevation_down
@@ -101,7 +101,7 @@ class PlungerExtension:
 
 
 class Support:
-    wall_thickness = KeyPlatform.thickness
+    wall_thickness = KeySupport.thickness
     inner_gap = 100
     inner_gap_chamfer = 10
     wood_tol = 0.5
@@ -109,7 +109,7 @@ class Support:
     wood_gap_height = DimensionalLumber.four_inches + wood_tol * 2
     depth = wall_thickness * 4 + inner_gap + wood_gap_width * 2
     height = wall_thickness * 2 + DimensionalLumber.four_inches + wood_tol * 2
-    elevation = KeyPlatform.elevation - wall_thickness
+    elevation = KeySupport.elevation - wall_thickness
     platform_elevation = 6.25
     spacer_height = elevation - platform_elevation - SiliconeFeet.thickness
     spacer_wall_thickness = 8

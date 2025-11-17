@@ -1,28 +1,21 @@
-all: key-platform-0.stl \
-	 key-platform-1.stl \
-	 key-platform-2.stl \
-	 key-platform-3.stl \
-	 key-platform-4.stl \
-	 key-platform-5.stl \
-	 key-platform-6.stl \
-	 key-platform-7.stl \
+all: key-support-octave.stl \
+	 key-support-low.stl \
+	 key-support-high.stl \
 	 white-plunger-extension.stl \
 	 black-plunger-extension.stl \
 	 solenoid-support.stl
 
-key-platform-0.stl \
-key-platform-1.stl \
-key-platform-2.stl \
-key-platform-3.stl \
-key-platform-4.stl \
-key-platform-5.stl \
-key-platform-6.stl \
-key-platform-7.stl: key-platform.py common.py
-	python3 key-platform.py -e
+key-support-octave.stl \
+key-support-low.stl \
+key-support-high.stl &: key-support.py common.py
+	uv run python key-support.py -e
+end-support.stl \
+end-support-spacer.stl &: end-support.py common.py
+	uv run python end-support.py -e
 white-plunger-extension.stl black-plunger-extension.stl: plunger-extension.py common.py
-	python3 plunger-extension.py
+	uv run python plunger-extension.py
 solenoid-support.stl: solenoid-support.py common.py
-	python3 solenoid-support.py
+	uv run python solenoid-support.py
 
 view:
 	f3d --watch *.stl
