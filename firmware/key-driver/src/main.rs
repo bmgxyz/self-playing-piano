@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
 #![feature(abi_avr_interrupt)]
+#![feature(asm_experimental_arch)]
 
 use core::{
+    arch::asm,
     cell::{OnceCell, RefCell, UnsafeCell},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -22,7 +24,6 @@ use avr_device::interrupt::{self, Mutex};
 use common::{
     Action, ModuleIndex, Schedule, ACK_RESPONSE, NAK_RESPONSE, SERIAL_BAUD_RATE, SERIAL_BUF_SIZE,
 };
-use embedded_hal::digital::OutputPin;
 use heapless::Vec;
 use panic_halt as _;
 
@@ -119,18 +120,20 @@ fn main() -> ! {
         }
     });
 
-    let mut key_00 = pins.d2.into_output();
-    let mut key_01 = pins.d3.into_output();
-    let mut key_02 = pins.d4.into_output();
-    let mut key_03 = pins.d5.into_output();
-    let mut key_04 = pins.d6.into_output();
-    let mut key_05 = pins.d7.into_output();
-    let mut key_06 = pins.d8.into_output();
-    let mut key_07 = pins.d9.into_output();
-    let mut key_08 = pins.d10.into_output();
-    let mut key_09 = pins.d11.into_output();
-    let mut key_10 = pins.d12.into_output();
-    let mut key_11 = pins.d13.into_output();
+    // in addition to setting these pins as outputs, this prevents any future code from taking
+    // ownership of the pins as well
+    let _key_00 = pins.d2.into_output();
+    let _key_01 = pins.d3.into_output();
+    let _key_02 = pins.d4.into_output();
+    let _key_03 = pins.d5.into_output();
+    let _key_04 = pins.d6.into_output();
+    let _key_05 = pins.d7.into_output();
+    let _key_06 = pins.d8.into_output();
+    let _key_07 = pins.d9.into_output();
+    let _key_08 = pins.d10.into_output();
+    let _key_09 = pins.d11.into_output();
+    let _key_10 = pins.d12.into_output();
+    let _key_11 = pins.d13.into_output();
 
     interrupt::free(|cs| {
         let mut schedule = SCHEDULE.borrow(cs).borrow_mut();
@@ -147,26 +150,10 @@ fn main() -> ! {
         for action in schedule.actions.iter() {
             match action {
                 Action::Delay { duration_us } => delay_us((*duration_us).into()),
-                Action::Transition {
-                    module_key_index,
-                    new_state,
-                } => {
-                    let _ = match module_key_index.get() {
-                        0 => key_00.set_state((*new_state).into()),
-                        1 => key_01.set_state((*new_state).into()),
-                        2 => key_02.set_state((*new_state).into()),
-                        3 => key_03.set_state((*new_state).into()),
-                        4 => key_04.set_state((*new_state).into()),
-                        5 => key_05.set_state((*new_state).into()),
-                        6 => key_06.set_state((*new_state).into()),
-                        7 => key_07.set_state((*new_state).into()),
-                        8 => key_08.set_state((*new_state).into()),
-                        9 => key_09.set_state((*new_state).into()),
-                        10 => key_10.set_state((*new_state).into()),
-                        11 => key_11.set_state((*new_state).into()),
-                        _ => unreachable!(),
-                    };
-                }
+                Action::SetKeyPins { port_b, port_d } => unsafe {
+                    asm!("out 0x05, {}", in(reg) *port_b);
+                    asm!("out 0x0b, {}", in(reg) *port_d);
+                },
             }
         }
     }

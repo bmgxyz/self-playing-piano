@@ -41,7 +41,7 @@ impl KeyIndex {
 
 #[test]
 fn key_index() {
-    for key_index_num in KeyIndex::MIN_VALUE..KeyIndex::MAX_VALUE {
+    for key_index_num in KeyIndex::MIN_VALUE..=KeyIndex::MAX_VALUE {
         let key_index = KeyIndex::new(key_index_num).unwrap();
         assert_eq!(
             key_index,
@@ -90,13 +90,8 @@ impl IndexMut<KeyIndex> for KeyStates {
 
 #[derive(PartialEq, Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum Action {
-    Delay {
-        duration_us: u8,
-    },
-    Transition {
-        module_key_index: ModuleKeyIndex,
-        new_state: bool,
-    },
+    Delay { duration_us: u8 },
+    SetKeyPins { port_b: i8, port_d: i8 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -115,53 +110,9 @@ impl Schedule {
     pub fn all_off() -> Schedule {
         Self {
             actions: Vec::from_slice(&[
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<0>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<1>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<2>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<3>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<4>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<5>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<6>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<7>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<8>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<9>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<10>(),
-                    new_state: false,
-                },
-                Action::Transition {
-                    module_key_index: ModuleKeyIndex::const_new::<11>(),
-                    new_state: false,
+                Action::SetKeyPins {
+                    port_b: 0,
+                    port_d: 0,
                 },
                 Action::Delay {
                     duration_us: Self::TOTAL_PWM_PERIOD_US,
@@ -199,12 +150,19 @@ impl Schedule {
                 .collect();
         falling_edges.sort_unstable();
 
-        let starting_pin_states = states.iter().map(|(dc, idx)| Action::Transition {
-            module_key_index: *idx,
-            new_state: *dc > 0,
-        });
+        let (mut port_b, mut port_d) = states.iter().filter(|(dc, _mki)| *dc > 0).fold(
+            (0, 0),
+            |(port_b, port_d), (_dc, mki)| {
+                let idx = mki.get();
+                if idx <= 5 {
+                    (port_b, port_d | (1 << (idx + 2)))
+                } else {
+                    (port_b | (1 << (idx - 6)), port_d)
+                }
+            },
+        );
         let mut schedule = Schedule::empty();
-        schedule.actions.extend(starting_pin_states);
+        let _ = schedule.actions.push(Action::SetKeyPins { port_b, port_d });
         let mut period_position_us = 0;
         for (duty_cycle, module_key_index) in falling_edges.iter() {
             let new_period_position_us =
@@ -215,10 +173,13 @@ impl Schedule {
                     duration_us: delay_duration_us,
                 });
             }
-            let _ = schedule.actions.push(Action::Transition {
-                module_key_index: *module_key_index,
-                new_state: false,
-            });
+            let idx = module_key_index.get();
+            if idx <= 5 {
+                port_d &= !(1 << (idx + 2));
+            } else {
+                port_b &= !(1 << (idx - 6));
+            }
+            let _ = schedule.actions.push(Action::SetKeyPins { port_b, port_d });
             period_position_us = new_period_position_us;
         }
         // handle last delay
@@ -238,17 +199,9 @@ impl Display for Schedule {
         for action in self.actions.iter() {
             match action {
                 Action::Delay { duration_us } => writeln!(f, "delay for {duration_us} us")?,
-                Action::Transition {
-                    module_key_index,
-                    new_state,
-                } => writeln!(
-                    f,
-                    "set {module_key_index} to {}",
-                    match new_state {
-                        true => "high",
-                        false => "low",
-                    }
-                )?,
+                Action::SetKeyPins { port_b, port_d } => {
+                    writeln!(f, "PORTB: {port_b:08b}, PORTD: {port_d:08b}")?
+                }
             };
         }
         Ok(())
