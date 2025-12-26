@@ -1,0 +1,39 @@
+[package]
+name = "coil-winder"
+version = "0.1.0"
+authors = ["Bradley Gannon <bradley@bradleygannon.com>"]
+edition = "2021"
+
+[[bin]]
+name = "coil-winder"
+test = false
+bench = false
+
+[dependencies]
+avr-device = "0.7"
+panic-halt = "1.0.0"
+ufmt = "0.2.0"
+nb = "1.1.0"
+embedded-hal = "1.0"
+
+[dependencies.arduino-hal]
+git = "https://github.com/rahix/avr-hal"
+rev = "fafaf587a32a4500239fd073f89d1b9c36b48092"
+features = ["arduino-nano"]
+
+[dependencies.atmega-hal]
+git = "https://github.com/rahix/avr-hal"
+rev = "fafaf587a32a4500239fd073f89d1b9c36b48092"
+features = ["atmega328p"]
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"

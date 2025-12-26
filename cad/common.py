@@ -139,6 +139,22 @@ class ControllerPCB:
     thickness = 1.57
 
 
+class Nema17Motor:
+    body_width = 42.3
+    body_height = 42.3
+    body_length = 34
+    lip_diameter = 22
+    shaft_diameter = 5
+    shaft_flat_diameter = 4.5
+    shaft_length = 24
+    mounting_hole_positions = [
+        (-15.5, -15.5),
+        (-15.5, 15.5),
+        (15.5, 15.5),
+        (15.5, -15.5),
+    ]
+
+
 def export_stl(model, name):
     pwd = os.path.dirname(os.path.abspath(__file__))
     exporters.export(model, f"{pwd}/{name}.stl")

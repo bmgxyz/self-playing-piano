@@ -1,0 +1,137 @@
+(footprint "CP_Radial_D5.0mm_P2.50mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "CP, Radial series, Radial, pin pitch=2.50mm, diameter=5mm, height=7mm, Electrolytic Capacitor")
+	(tags "CP Radial series Radial pin pitch 2.50mm diameter 5mm height 7mm Electrolytic Capacitor")
+	(property "Reference" "REF**"
+		(at 1.25 -3.75 0)
+		(layer "F.SilkS")
+		(uuid "0d807b74-ba12-4c6f-a3a7-f63de592b8eb")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "CP_Radial_D5.0mm_P2.50mm"
+		(at 1.25 3.75 0)
+		(layer "F.Fab")
+		(uuid "f61ce69c-7fc2-4f0d-b84b-f21965fc4503")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8323506e-b841-4907-b624-ff0b456a3e24")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "a54dbbed-3433-4cf6-bf4e-9d2aae2f293f")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole)
+	(fp_circle
+		(center 1.25 0)
+		(end 4 0)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "af39aa55-2a53-4ee8-8bec-1b1b6eed1de7")
+	)
+	(fp_line
+		(start -0.883605 -1.0875)
+		(end -0.383605 -1.0875)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "6c83eeae-e459-4555-9f72-a3e6b8722f1d")
+	)
+	(fp_line
+		(start -0.633605 -1.3375)
+		(end -0.633605 -0.8375)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "223b0906-d997-4135-ad3e-f09df724da3f")
+	)
+	(fp_circle
+		(center 1.25 0)
+		(end 3.75 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "809c386f-3521-4bfb-b6df-bbc814b25ad4")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 1.25 0 0)
+		(layer "F.Fab")
+		(uuid "449756c0-4942-47ac-aad7-fb78c1223725")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" thru_hole roundrect
+		(at 0 0)
+		(size 1.8 2.65)
+		(drill 0.8)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(roundrect_rratio 0.15625)
+		(uuid "845119f7-71e8-4848-bbcb-e095bb10e7a1")
+	)
+	(pad "2" thru_hole oval
+		(at 2.5 0)
+		(size 1.8 2.65)
+		(drill 0.8)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(uuid "c60cd7f9-5e95-445f-84fa-dfb8b8687072")
+	)
+	(embedded_fonts no)
+	(model "${KICAD9_3DMODEL_DIR}/Capacitor_THT.3dshapes/CP_Radial_D5.0mm_P2.50mm.stpZ"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

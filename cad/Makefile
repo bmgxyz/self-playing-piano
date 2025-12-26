@@ -1,10 +1,16 @@
-all: key-support-octave.stl \
+all: coil-winder-main-support.stl \
+	 coil-winder-shaft-adapter.stl \
+	 key-support-octave.stl \
 	 key-support-low.stl \
 	 key-support-high.stl \
 	 white-plunger-extension.stl \
 	 black-plunger-extension.stl \
 	 solenoid-support.stl
 
+coil-winder-main-support.stl: coil-winder-main-support.py common.py
+	uv run python coil-winder-main-support.py -e
+coil-winder-shaft-adapter.stl: coil-winder-shaft-adapter.py common.py
+	uv run python coil-winder-shaft-adapter.py -e
 key-support-octave.stl \
 key-support-low.stl \
 key-support-high.stl &: key-support.py common.py
