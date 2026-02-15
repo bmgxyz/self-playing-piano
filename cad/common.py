@@ -3,8 +3,6 @@ import cadquery as cq
 import argparse
 import os
 
-from ocp_vscode import show_object, set_defaults, Camera
-
 # All dimensions are in millimeters
 # Vertical datum is the plane of the white keys
 
@@ -40,10 +38,9 @@ class Plunger:
     diameter = 9.525  # 3/8"
     height = 42
     hole_diameter = diameter + 2
-
-
-class Steel:
-    thickness = 2
+    attachment_depth = 8
+    attachment_diameter_final = 6.25 # 1/4"
+    attachment_diameter_initial = 3.175 # 1/8"
 
 
 class Solenoid:
@@ -75,9 +72,6 @@ class KeySupport:
 
 
 class PlungerExtension:
-    head_diameter = 20.3
-    head_thickness = 2
-    head_fuzz_thickness = 4
     # set the stem lengths such that the plungers are halfway out in the down position, which seems
     # to give the greatest efficiency for holding
     white_key_stem_length = (
@@ -86,8 +80,7 @@ class PlungerExtension:
         + Solenoid.height
         - WhiteKey.elevation_down
         - Plunger.height / 2
-        - head_thickness
-        - head_fuzz_thickness
+        - SiliconeFeet.thickness
     )
     black_key_stem_length = (
         KeySupport.elevation
@@ -95,8 +88,7 @@ class PlungerExtension:
         + Solenoid.height
         - BlackKey.elevation_down
         - Plunger.height / 2
-        - head_thickness
-        - head_fuzz_thickness
+        - SiliconeFeet.thickness
     )
 
 

@@ -6,12 +6,14 @@ from common import PlungerExtension, Plunger, export_stl
 def plunger_extension(stem_length: float) -> cq.Solid:
     return (
         cq.Workplane("XY")
-        .circle(PlungerExtension.head_diameter / 2)
-        .extrude(PlungerExtension.head_thickness)
+        .cylinder(stem_length, Plunger.diameter / 2, centered=[True, True, False])
         .faces(">Z")
         .workplane()
-        .circle(Plunger.diameter / 2)
-        .extrude(stem_length)
+        .cylinder(
+            Plunger.attachment_depth - 1,
+            Plunger.attachment_diameter_final / 2,
+            centered=[True, True, False]
+        )
     )
 
 

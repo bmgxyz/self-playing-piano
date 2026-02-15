@@ -5,7 +5,8 @@ all: coil-winder-main-support.stl \
 	 key-support-high.stl \
 	 white-plunger-extension.stl \
 	 black-plunger-extension.stl \
-	 solenoid-support.stl
+	 solenoid-support.stl \
+	 plunger-hat.stl
 
 coil-winder-main-support.stl: coil-winder-main-support.py common.py
 	uv run python coil-winder-main-support.py -e
@@ -19,9 +20,11 @@ end-support.stl \
 end-support-spacer.stl &: end-support.py common.py
 	uv run python end-support.py -e
 white-plunger-extension.stl black-plunger-extension.stl: plunger-extension.py common.py
-	uv run python plunger-extension.py
+	uv run python plunger-extension.py -e
 solenoid-support.stl: solenoid-support.py common.py
-	uv run python solenoid-support.py
+	uv run python solenoid-support.py -e
+plunger-hat.stl: plunger-hat.py common.py
+	uv run python plunger-hat.py -e
 
 view:
 	f3d --watch *.stl
