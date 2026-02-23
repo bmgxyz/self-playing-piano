@@ -1,10 +1,12 @@
 use std::{
     error::Error,
+    path::PathBuf,
     sync::mpsc::channel,
     thread::sleep,
     time::{Duration, Instant},
 };
 
+use clap::Parser;
 use common::{
     ACK_RESPONSE, KeyIndex, KeyState, KeyVelocity, ModuleIndex, NUM_KEYS, SERIAL_BAUD_RATE,
     Schedule,
@@ -31,15 +33,15 @@ fn send_schedule(
     port: &mut Box<dyn SerialPort>,
     schedule: &Schedule,
 ) -> Result<(), Box<dyn Error>> {
-    let mut schedule_bytes = schedule.serialize()?;
-    schedule_bytes.extend_from_slice(b"\r\n").unwrap(); // TODO
+    let mut schedule_bytes = schedule.serialize()?.to_vec();
+    schedule_bytes.extend_from_slice(b"\r\n");
     port.write_all(&schedule_bytes)?;
     Ok(())
 }
 
 fn read_response(port: &mut Box<dyn SerialPort>) -> Result<bool, Box<dyn Error>> {
     let mut buf = [0u8; 3];
-    port.read(&mut buf)?;
+    port.read_exact(&mut buf)?;
     match buf {
         ACK_RESPONSE => Ok(true),
         _ => Ok(false),
@@ -59,7 +61,73 @@ fn midi_note_to_key_index(note: &Note) -> Option<KeyIndex> {
     }
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(short = '0', long)]
+    driver_0: Option<PathBuf>,
+
+    #[arg(short = '1', long)]
+    driver_1: Option<PathBuf>,
+
+    #[arg(short = '2', long)]
+    driver_2: Option<PathBuf>,
+
+    #[arg(short = '3', long)]
+    driver_3: Option<PathBuf>,
+
+    #[arg(short = '4', long)]
+    driver_4: Option<PathBuf>,
+
+    #[arg(short = '5', long)]
+    driver_5: Option<PathBuf>,
+
+    #[arg(short = '6', long)]
+    driver_6: Option<PathBuf>,
+
+    #[arg(short = '7', long)]
+    driver_7: Option<PathBuf>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
+
+    let driver_paths = [
+        args.driver_0,
+        args.driver_1,
+        args.driver_2,
+        args.driver_3,
+        args.driver_4,
+        args.driver_5,
+        args.driver_6,
+        args.driver_7,
+    ];
+    let mut drivers = driver_paths
+        .iter()
+        .enumerate()
+        .map(|(idx, dp)| match dp {
+            Some(d) => match d.to_str() {
+                Some(path_str) => match init_port(path_str) {
+                    Ok(port) => Some(port),
+                    Err(e) => {
+                        eprintln!("Failed to initialize driver {idx}: {e}");
+                        None
+                    }
+                },
+                None => {
+                    eprintln!("Failed to convert path for driver {idx} to str");
+                    None
+                }
+            },
+            None => {
+                eprintln!("No path specified for driver {idx}, skipping");
+                None
+            }
+        })
+        .collect::<Vec<Option<Box<dyn SerialPort>>>>();
+    if drivers.iter().all(|d| d.is_none()) {
+        return Err("No drivers found, exiting".into());
+    }
+
     let (midi_tx, midi_rx) = channel();
 
     let mut midi_in = MidiInput::new("Bothoven")?;
@@ -73,9 +141,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     let mut key_states = [KeyState::Off; NUM_KEYS];
-    let mut schedule = Schedule::build(&ModuleIndex::const_new::<3>(), &key_states);
-    let mut port = init_port("/dev/ttyUSB0")?;
-    send_schedule(&mut port, &schedule)?;
+    let mut schedules = [
+        Schedule::build(&ModuleIndex::const_new::<0>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<1>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<2>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<3>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<4>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<5>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<6>(), &key_states),
+        Schedule::build(&ModuleIndex::const_new::<7>(), &key_states),
+    ];
+    let mut first_loop = true;
+
     loop {
         let loop_start = Instant::now();
         while let Ok(midi_bytes) = midi_rx.try_recv() {
@@ -111,16 +188,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             // TODO should probably switch state machine logic to millis instead of micros
             key_state.tick(LOOP_DELAY.as_micros() as u32);
         }
-        let new_schedule = Schedule::build(&ModuleIndex::const_new::<3>(), &key_states);
-        if new_schedule != schedule {
-            schedule = new_schedule;
-            send_schedule(&mut port, &schedule)?;
-            if let Ok(resp) = read_response(&mut port)
-                && !resp
-            {
-                println!("nak");
+        for (idx, (maybe_port, old_schedule)) in
+            drivers.iter_mut().zip(schedules.iter_mut()).enumerate()
+        {
+            if let Some(port) = maybe_port {
+                let new_schedule =
+                    Schedule::build(&ModuleIndex::new_saturating(idx as u8), &key_states);
+                if new_schedule != *old_schedule || first_loop {
+                    *old_schedule = new_schedule;
+                    send_schedule(port, old_schedule)?;
+                    if let Ok(resp) = read_response(port)
+                        && !resp
+                    {
+                        eprintln!("Got NAK from driver {idx}");
+                    }
+                }
             }
         }
+        first_loop = false;
         if loop_start.elapsed() < LOOP_DELAY {
             sleep(loop_start + LOOP_DELAY - Instant::now());
         }
