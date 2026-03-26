@@ -13,7 +13,7 @@ use common::{
 };
 use midir::{Ignore, MidiInput, os::unix::VirtualInput};
 use serialport::SerialPort;
-use wmidi::{Channel, MidiMessage, Note};
+use wmidi::{Channel, MidiMessage, Note, U7};
 
 fn init_port(path: &str) -> Result<Box<dyn SerialPort>, serialport::Error> {
     let mut port = serialport::new(path, SERIAL_BAUD_RATE)
@@ -158,7 +158,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         while let Ok(midi_bytes) = midi_rx.try_recv() {
             if let Ok(midi_message) = MidiMessage::try_from(midi_bytes.as_slice()) {
                 match midi_message {
-                    MidiMessage::NoteOff(channel, note, _u7) if channel == MIDI_CHANNEL => {
+                    MidiMessage::NoteOff(MIDI_CHANNEL, note, _)
+                    | MidiMessage::NoteOn(MIDI_CHANNEL, note, U7::MIN) => {
                         if let Some(key_index) = midi_note_to_key_index(&note) {
                             key_states[key_index].midi_note_off();
                             println!(
